@@ -3,7 +3,7 @@
 [![Python Version](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python)](https://www.python.org/)
 [![Status](https://img.shields.io/badge/Status-Active-success)]()
 
-**Enterprise AI Gateway** is a high-performance microservice designed to securely integrate generative AI models into corporate infrastructure. It provides a unified API interface for routing requests between local on-premise models and external AI providers, ensuring data privacy, compliance, and scalability.
+**Enterprise AI Gateway** is a high-performance service designed to securely integrate generative AI models into corporate infrastructure. It provides a unified API interface for routing requests between local on-premise models and external AI providers, ensuring data privacy, compliance, and scalability.
 
 # Key Features
 
@@ -14,7 +14,7 @@
 - **Smart Routing** 
   Dynamically route requests based on configuration:
   - **Local Models** 
-    Secure, on-premise inference (via Python Worker).
+    Secure, on-premise inference of local models
   - **External Providers** 
     Direct integration with cloud APIs (OpenAI, Azure, etc.).
 
@@ -56,7 +56,7 @@
 
 
 
-# Quick Start
+# Quick Start (TODO change)
 
 ### 1. Clone the Repository
 ```bash
@@ -124,21 +124,8 @@ Key environment variables (`.env`):
 
 ---
 
-# 🧪 Testing
 
-Run unit tests for both services:
-
-```bash
-# Go Gateway Tests
-make test-go
-
-# Python Worker Tests
-make test-py
-```
-
----
-
-# Project Structure
+# Project Structure (TODO)
 
 ```text
 ├── cmd/
@@ -154,9 +141,8 @@ make test-py
 
 # Security & Compliance
 
-- **Data Privacy:** Sensitive data patterns (emails, phones, IDs) are detected and masked before leaving the internal network.
+- **Data Privacy:** Sensitive data patterns (emails, phones, IDs) are detected and wont leave the internal network before asking you.
 - **Audit Trail:** Every request is logged with user ID, timestamp, and token usage for billing and compliance audits.
-- **Access Control:** Integrated with corporate LDAP/AD via JWT middleware.
 
 ---
 
@@ -168,24 +154,38 @@ make test-py
 - [ ] how to use github projects?
 
 
-
-- [ ] teach TNT how to use github
-  
+## what to learn
 
 - [ ] clone repo to TNT machine
   - [ ] make branch for TNT
   - [ ] TNT makes first commit
   - [ ] merge (or baseon?)
 
-- [ ] learn of tech stack in readme, change it
+- [ ] learn tech stack in readme, change it
 
+- [ ] how to use code assistant
+- [ ] give assistant internet connection
+
+
+## How to deploy
+
+- [ ] docker
 
 
 ## Someday 
 
-- [ ] 
+- [ ] testing
+
+---
 
 # Some useful tech information 
+
+# base
+ 
+- git
+  
+
+---
 
 ## memory work
 
