@@ -31,6 +31,9 @@
 
 - **Cloud-Native** Ready for deployment on Kubernetes (Helm charts included) and Docker Compose.
 
+- **High efficiency**
+  Over 1000 rps.
+
 ---
 
 # Quick Start (TODO change)
@@ -60,7 +63,7 @@ Check the health endpoint:
 curl http://localhost:8080/api/v1/health
 ```
 
-## ⚙️ Configuration
+## Configuration
 
 Key environment variables (`.env`):
 
