@@ -18,43 +18,20 @@
   - **External Providers** 
     Direct integration with cloud APIs (OpenAI, Azure, etc.).
 
-- **Data privacy and control**
-  Your data will stay private if you use local models. User can provide his documents in chat or admin can connect database to aicore.
+- **DataBase provate usage**
+  Models can work with local data to be in context of your workflow.
+  Your data will stay private if you use local models. User can provide his documents in chat or admin can simply connect database to aicore.
 
 - **Enterprise Security:**
   - API Key & JWT Authentication.
   - PII (Personally Identifiable Information) Masking before sending data to external models.
   - Audit logging for compliance.
 
-- **Hybrid Architecture:**
-  - **Go Gateway:** High-concurrency API handling, authentication, and routing.
-  - **Python Worker:** Specialized ML inference engine using PyTorch/Transformers.
+- **Data control** Structured JSON logging, metrics export, and distributed tracing ready.
 
-- **Observability:** Structured JSON logging, metrics export, and distributed tracing ready.
+- **Cloud-Native** Ready for deployment on Kubernetes (Helm charts included) and Docker Compose.
 
-- **Cloud-Native:** Ready for deployment on Kubernetes (Helm charts included) and Docker Compose.
-
-# Architecture
-
--
-
-### Why Hybrid?
-- **Go:** Handles network I/O, authentication, and routing with minimal latency and high concurrency.
-- **Python:** Leverages the rich ecosystem of AI libraries (`torch`, `transformers`) for model inference without compromising the gateway's stability.
-
-# Tech Stack
-
-| Component | Technology |
-| :--- | :--- |
-| **API Gateway** | Go (Gin/Echo), gRPC Client |
-| **ML Worker** | Python (FastAPI/gRPC), PyTorch, Transformers |
-| **Communication** | gRPC (Protobuf) |
-| **Containerization** | Docker, Docker Compose |
-| **Orchestration** | Kubernetes (K8s), Helm |
-| **Logging** | Zap (Go), Loguru (Python), JSON Format |
-| **Testing** | Go `testing`, Python `pytest` |
-
-
+---
 
 # Quick Start (TODO change)
 
