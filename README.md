@@ -18,7 +18,7 @@
   - **External Providers** 
     Direct integration with cloud APIs (OpenAI, Azure, etc.).
 
-- **DataBase provate usage**
+- **DataBase private usage**
   Models can work with local data to be in context of your workflow.
   Your data will stay private if you use local models. User can provide his documents in chat or admin can simply connect database to aicore.
 
