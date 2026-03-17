@@ -180,9 +180,12 @@ Key environment variables (`.env`):
 
 # Some useful tech information 
 
-# base
+## base
  
+https://youtu.be/WgV6M1LyfNY
+
 - git
+  https://youtu.be/xN1-2p06Urc
   
 
 ---
