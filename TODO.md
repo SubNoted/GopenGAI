@@ -1,12 +1,28 @@
 # GoPengAI — Implementation TODO
 
-> **Last synced:** 2026-05-23 (Phase 0-Phase 1 files exist but untracked; no code committed to git yet)
+> **Last synced:** 2026-05-23 (Directory structure, SQL schemas/queries, configs, docs complete. All 24 Go files are empty stubs. No go.mod — build will not compile.)
 > **Based on:** 10 architecture diagrams (01-container through 10-gopengai-container)
 > **Tech Stack:** Go 1.21+, SQLite3 (ncruces/go-sqlite3), sqlc, Goose, Cobra CLI, net/http, SSE
 > **Approach:** Pure Go — no CGo, no Python. All phases for semester 4 delivery. Local dev deployment.
 > **API Design:** Adapted OpenCode hybrid — async message POST (202) + SSE streaming + tree-based history
 > **DB Design:** Adapted OpenCode SQLite model — 3 base tables extended for agents, memory, delegation
 > **Order:** Sequential phases. Each phase builds on the previous.
+
+## Overall Progress: ~15%
+
+```
+Phase 0 (Bootstrap)    ████░░░░░░  40%  (dirs, gitignore, config done; no go.mod, build fails)
+Phase 1 (Config+DB)    ███░░░░░░░  30%  (SQL schema + queries done; no Go code, sqlc not run)
+Phase 2 (LLM Client)   ░░░░░░░░░░   0%
+Phase 3 (Agent Types)  ░░░░░░░░░░   0%
+Phase 4 (History Tree) ░░░░░░░░░░   0%
+Phase 5 (Tools)        ░░░░░░░░░░   0%
+Phase 6 (Agent Engine) ░░░░░░░░░░   0%
+Phase 7 (HTTP API)     ░░░░░░░░░░   0%
+Phase 8 (CLI)          ░░░░░░░░░░   0%
+Phase 9 (Testing)      ░░░░░░░░░░   0%
+Phase 10 (Docs)        ████░░░░░░  40%  (README, diagrams, Makefile done; no agent examples)
+```
 
 ---
 
@@ -15,7 +31,7 @@
 **Goal:** Rename to gopengai, initialize Go module, create directory structure, verify build
 
 - [ ] `go mod init gopengai`
-- [ ] Create directory structure per diagram `06-package-structure`:
+- [x] Create directory structure per diagram `06-package-structure`:
   ```
   ├── cmd/api/main.go
   ├── cmd/cli/main.go
@@ -51,13 +67,14 @@
           └── summarizer.md
   ```
 - [ ] Add dependencies: `github.com/ncruces/go-sqlite3`, `github.com/pressly/goose/v3`, `github.com/spf13/cobra`, `gopkg.in/yaml.v3`
-- [ ] Create `gopengai.json.example` with server, LLM, agents_dir, data_dir, default_agent fields
-- [ ] Create `.gitignore`:
+- [x] Create `gopengai.json.example` with server, LLM, agents_dir, data_dir, default_agent fields
+- [x] Create `.gitignore`:
   ```
   # Binary
   /gopengai
   /api
   /cli
+  *.exe
 
   # Data directory (per-project SQLite)
   .gopengai/
@@ -68,6 +85,7 @@
   # IDE
   .idea/
   .vscode/
+  .zed/
   ```
 - [ ] Verify `go build ./cmd/api/` and `go build ./cmd/cli/` succeed (empty main files)
 - [ ] Verify `go vet ./...` passes
@@ -79,28 +97,7 @@
 **Goal:** Config loading from gopengai.json, SQLite connection, Goose migrations, sqlc-generated CRUD
 
 ### 1.1 Configuration (`internal/config/config.go`)
-- [ ] Define `Config` struct matching `gopengai.json` schema:
-  ```go
-  type Config struct {
-      Server   ServerConfig   `json:"server"`
-      LLM      LLMConfig      `json:"llm"`
-      AgentsDir string        `json:"agents_dir"`
-      DataDir   string        `json:"data_dir"`     // default: ".gopengai"
-      DBPath    string        `json:"db_path"`       // default: "<data_dir>/gopengai.db"
-      DefaultAgent string     `json:"default_agent"`
-  }
-  type ServerConfig struct {
-      Host string `json:"host"`
-      Port int    `json:"port"`
-  }
-  type LLMConfig struct {
-      Provider      string `json:"provider"`
-      BaseURL       string `json:"base_url"`
-      APIKey        string `json:"api_key"`
-      Model         string `json:"model"`
-      MaxIterations int    `json:"max_iterations"`
-  }
-  ```
+- [ ] ~~Define `Config` struct matching `gopengai.json` schema~~ *(schema exists in `gopengai.json.example`, but Go struct not defined)*
 - [ ] `Load(path string) (*Config, error)` — read JSON file, apply defaults
 - [ ] Env var overrides: `GOPENGAI_PORT`, `GOPENGAI_LLM_API_KEY`, etc.
 - [ ] CLI flag overrides: `--port`, `--config`
@@ -114,162 +111,35 @@
 - [ ] Use **Goose** (`github.com/pressly/goose/v3`) for migration management
 - [ ] Embed migrations in binary via `go:embed`
 - [ ] `Migrate(db *sql.DB) error` — runs `goose.Up()` on startup
-- [ ] **Migration 1: `initial.sql`** — Create tables (adapted from OpenCode + our extensions):
-  ```sql
-  -- Sessions (OpenCode-compatible base)
-  CREATE TABLE IF NOT EXISTS sessions (
-      id TEXT PRIMARY KEY,
-      parent_session_id TEXT,          -- nullable, for session chaining (auto-compact)
-      agent_name TEXT NOT NULL DEFAULT 'default',
-      title TEXT NOT NULL,
-      active_leaf_id TEXT,             -- current active branch leaf (tree extension)
-      status TEXT NOT NULL DEFAULT 'idle',  -- idle | working | aborted
-      message_count INTEGER NOT NULL DEFAULT 0 CHECK (message_count >= 0),
-      prompt_tokens INTEGER NOT NULL DEFAULT 0 CHECK (prompt_tokens >= 0),
-      completion_tokens INTEGER NOT NULL DEFAULT 0 CHECK (completion_tokens >= 0),
-      cost REAL NOT NULL DEFAULT 0.0 CHECK (cost >= 0.0),
-      updated_at INTEGER NOT NULL,     -- Unix ms
-      created_at INTEGER NOT NULL,     -- Unix ms
-      summary_message_id TEXT          -- for auto-compact summary link
-  );
-
-  -- Messages (OpenCode-compatible base + tree/tool extensions)
-  CREATE TABLE IF NOT EXISTS messages (
-      id TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL,
-      parent_id TEXT,                  -- tree structure: NULL for root, else → messages.id
-      role TEXT NOT NULL,              -- user | assistant | tool | system
-      parts TEXT NOT NULL DEFAULT '[]', -- JSON array of message parts (text, tool_use, images)
-      content TEXT,                    -- plain text content (for tree queries)
-      agent_name TEXT,                 -- which agent produced this
-      tool_name TEXT,                  -- if role=tool: which tool
-      tool_call_id TEXT,               -- links tool response to call
-      tool_args TEXT,                  -- JSON: tool arguments
-      model TEXT,                      -- nullable, model used
-      token_count INTEGER DEFAULT 0,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      finished_at INTEGER,             -- nullable, when assistant finished
-      FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE
-  );
-
-  -- Agents (loaded from .md files)
-  CREATE TABLE IF NOT EXISTS agents (
-      name TEXT PRIMARY KEY,           -- filename without .md
-      system_prompt TEXT NOT NULL,
-      tools TEXT NOT NULL DEFAULT '[]', -- JSON array of allowed tool names
-      model TEXT,                       -- model override (nullable)
-      parent_agent TEXT,               -- parent agent name (nullable)
-      permissions TEXT NOT NULL DEFAULT '{}', -- JSON: tool_name → "allow"/"deny"
-      config_path TEXT,                -- absolute path to .md file
-      loaded_at INTEGER NOT NULL
-  );
-
-  -- Memory (per-agent key-value store)
-  CREATE TABLE IF NOT EXISTS memory (
-      id TEXT PRIMARY KEY,
-      agent_name TEXT NOT NULL,
-      key TEXT NOT NULL,
-      value TEXT NOT NULL,
-      category TEXT,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      FOREIGN KEY (agent_name) REFERENCES agents (name) ON DELETE CASCADE
-  );
-
-  -- Delegation Logs (agent → sub-agent tracking)
-  CREATE TABLE IF NOT EXISTS delegation_logs (
-      id TEXT PRIMARY KEY,
-      parent_message_id TEXT NOT NULL,
-      child_agent_name TEXT NOT NULL,
-      child_session_id TEXT,
-      task_description TEXT NOT NULL,
-      result_summary TEXT,
-      duration_ms INTEGER,
-      created_at INTEGER NOT NULL,
-      FOREIGN KEY (parent_message_id) REFERENCES messages (id) ON DELETE CASCADE,
-      FOREIGN KEY (child_agent_name) REFERENCES agents (name) ON DELETE CASCADE
-  );
-  ```
-- [ ] **Triggers** (auto-update timestamps, message counts):
+- [x] **Migration 1: `001_initial.sql`** — all 5 tables, 5 triggers, 4 indexes, foreign keys (fully written)
+- [x] **Triggers** (auto-update timestamps, message counts):
   - `update_sessions_updated_at` — on session update
   - `update_messages_updated_at` — on message update
   - `update_memory_updated_at` — on memory update
   - `update_session_message_count_on_insert` — increment on message insert
   - `update_session_message_count_on_delete` — decrement on message delete
-- [ ] **Indexes**:
+- [x] **Indexes**:
   - `idx_messages_session_id` on messages (session_id)
   - `idx_messages_parent_id` on messages (parent_id)
   - `idx_memory_agent_name` on memory (agent_name)
   - `idx_delegation_logs_parent` on delegation_logs (parent_message_id)
 
 ### 1.4 sqlc Setup (`sqlc.yaml`)
-- [ ] Configure sqlc v1.29+ for SQLite engine:
-  ```yaml
-  version: "2"
-  sql:
-    - engine: "sqlite"
-      schema: "internal/db/migrations"
-      queries: "internal/db/sql"
-      gen:
-        go:
-          package: "db"
-          out: "internal/db"
-          emit_json_tags: true
-          emit_prepared_queries: true
-          emit_interface: true
-  ```
-- [ ] Write raw SQL queries in `internal/db/sql/*.sql`:
+- [x] Configure sqlc v1.29+ for SQLite engine — `sqlc.yaml` fully written
+- [x] Write raw SQL queries in `internal/db/sql/*.sql`:
   - `sessions.sql` — CreateSession, GetSessionByID, ListSessions, UpdateSession, DeleteSession
   - `messages.sql` — CreateMessage, GetMessage, ListMessagesBySession, GetBranchFromRootTo (recursive CTE), GetAllLeaves, UpdateMessage, DeleteMessage, DeleteSessionMessages
   - `agents.sql` — CreateAgent, GetAgent, ListAgents, DeleteAgent
   - `memory.sql` — CreateMemory, GetMemory, ListMemoryByAgent, DeleteMemory
   - `delegation_logs.sql` — CreateDelegationLog, ListDelegationLogsBySession
-- [ ] Run `sqlc generate` to produce Go code
+- [ ] Run `sqlc generate` to produce Go code (requires `go.mod` + dependencies first)
 
 ### 1.5 Generated Querier Interface (`internal/db/querier.go`)
-- [ ] Expected interface (sqlc-generated):
-  ```go
-  type Querier interface {
-      // Sessions
-      CreateSession(ctx, arg CreateSessionParams) (Session, error)
-      GetSessionByID(ctx, id string) (Session, error)
-      ListSessions(ctx) ([]Session, error)
-      UpdateSession(ctx, arg UpdateSessionParams) (Session, error)
-      DeleteSession(ctx, id string) error
-
-      // Messages
-      CreateMessage(ctx, arg CreateMessageParams) (Message, error)
-      GetMessage(ctx, id string) (Message, error)
-      ListMessagesBySession(ctx, sessionID string) ([]Message, error)
-      GetBranchFromRootTo(ctx, messageID string) ([]Message, error)
-      GetAllLeaves(ctx, sessionID string) ([]Message, error)
-      UpdateMessage(ctx, arg UpdateMessageParams) error
-      DeleteMessage(ctx, id string) error
-      DeleteSessionMessages(ctx, sessionID string) error
-
-      // Agents
-      CreateAgent(ctx, arg CreateAgentParams) (Agent, error)
-      GetAgent(ctx, name string) (Agent, error)
-      ListAgents(ctx) ([]Agent, error)
-      DeleteAgent(ctx, name string) error
-
-      // Memory
-      CreateMemory(ctx, arg CreateMemoryParams) (Memory, error)
-      GetMemory(ctx, arg GetMemoryParams) (Memory, error)
-      ListMemoryByAgent(ctx, agentName string) ([]Memory, error)
-      DeleteMemory(ctx, id string) error
-
-      // Delegation
-      CreateDelegationLog(ctx, arg CreateDelegationLogParams) (DelegationLog, error)
-      ListDelegationLogsBySession(ctx, sessionID string) ([]DelegationLog, error)
-  }
-  ```
+- [ ] sqlc-generated `Querier` interface (not generated yet — sqlc not run)
 
 ### 1.6 Data Directory Setup
 - [ ] Default data dir: `.gopengai/` (per-project, gitignored)
-- [ ] Structure: `.gopengai/gopengai.db` — single SQLite file
-- [ ] Add `.gopengai/` to `.gitignore`
+- [x] `.gopengai/` already in `.gitignore`
 
 ---
 
