@@ -43,9 +43,12 @@ flowchart TD
         end
 
         subgraph "internal/db/"
-            DB_INIT["db/db.go\nSQLite connection, migrations"]
-            DB_MEMORY["db/memory.go\nMemory table CRUD"]
-            DB_AGENT["db/agent.go\nAgent table CRUD"]
+            DB_CONNECT["db/connect.go\nSQLite connection (ncruces/go-sqlite3)\nWAL mode, pragmas, pool config"]
+            DB_EMBED["db/embed.go\nEmbeds migrations/ into binary via go:embed"]
+            DB_MIGRATIONS["db/migrations/\nGoose SQL migration files\n(001_initial.sql, ...)"]
+            DB_SQL["db/sql/\nRaw SQL queries for sqlc\n(sessions, messages, agents, memory, delegation)"]
+            DB_GENERATED["db/db.go, models.go, querier.go\nsqlc-generated: Queries struct,\nGo types, Querier interface"]
+            DB_IMPL["db/*.sql.go\nsqlc-generated typed query\nimplementations"]
         end
 
         subgraph "internal/config/"
@@ -62,15 +65,17 @@ flowchart TD
     AGENT_ENGINE --> TOOLS_REG
     AGENT_ENGINE --> LLM_CLIENT
     AGENT_ENGINE --> HIST_TREE
-    AGENT_LOADER --> DB_AGENT
+    AGENT_LOADER --> DB_GENERATED
     TOOLS_WEB --> LLM_TYPES
-    TOOLS_MEM --> DB_MEMORY
+    TOOLS_MEM --> DB_GENERATED
     TOOLS_DELEG --> AGENT_ENGINE
     HIST_REPO --> HIST_TREE
     HIST_BRANCH --> HIST_REPO
+    HIST_REPO --> DB_GENERATED
     LLM_CLIENT --> LLM_TYPES
-    DB_INIT --> DB_MEMORY
-    DB_INIT --> DB_AGENT
+    DB_CONNECT --> DB_GENERATED
+    DB_EMBED --> DB_MIGRATIONS
+    DB_SQL --> DB_GENERATED
 
     style CMD_API fill:#4CAF50,color:#fff
     style CMD_CLI fill:#4CAF50,color:#fff
@@ -88,7 +93,7 @@ flowchart TD
 | `internal/tools/` | Tool interface + implementations (web_fetch, memory, delegate) |
 | `internal/history/` | Message tree CRUD, branch management, traversal |
 | `internal/llm/` | OpenAI-compatible HTTP client for LLM calls |
-| `internal/db/` | SQLite initialization, migrations, memory/agent repos |
+| `internal/db/` | SQLite via ncruces/go-sqlite3, Goose migrations, sqlc-generated CRUD |
 | `internal/config/` | App configuration (env vars, flags, defaults) |
 
 ## Key Interfaces
@@ -110,5 +115,21 @@ type Engine interface {
 // internal/llm/client.go
 type Client interface {
     ChatCompletion(ctx context.Context, req *CompletionRequest) (*CompletionResponse, error)
+}
+
+// internal/db/querier.go (sqlc-generated)
+type Querier interface {
+    CreateSession(ctx, arg CreateSessionParams) (Session, error)
+    GetSessionByID(ctx, id string) (Session, error)
+    ListSessions(ctx) ([]Session, error)
+    CreateMessage(ctx, arg CreateMessageParams) (Message, error)
+    ListMessagesBySession(ctx, sessionID string) ([]Message, error)
+    GetBranchFromRootTo(ctx, messageID string) ([]Message, error)  // recursive CTE
+    GetAllLeaves(ctx, sessionID string) ([]Message, error)
+    CreateAgent(ctx, arg CreateAgentParams) (Agent, error)
+    GetAgent(ctx, name string) (Agent, error)
+    CreateMemory(ctx, arg CreateMemoryParams) (Memory, error)
+    ListMemoryByAgent(ctx, agentName string) ([]Memory, error)
+    // ... and more
 }
 ```
