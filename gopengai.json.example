@@ -1,0 +1,16 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8080
+  },
+  "llm": {
+    "provider": "openai",
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "sk-...",
+    "model": "gpt-4o",
+    "max_iterations": 10
+  },
+  "agents_dir": "./agents",
+  "data_dir": "./.gopengai",
+  "default_agent": "default"
+}

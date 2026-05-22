@@ -1,0 +1,16 @@
+# Binary
+/gopengai
+/api
+/cli
+*.exe
+
+# Data directory (per-project SQLite)
+.gopengai/
+
+# Go
+vendor/
+
+# IDE
+.idea/
+.vscode/
+.zed/
