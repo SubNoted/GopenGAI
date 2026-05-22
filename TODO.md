@@ -30,7 +30,7 @@ Phase 10 (Docs)        ████░░░░░░  40%  (README, diagrams, M
 **Dependencies:** None
 **Goal:** Rename to gopengai, initialize Go module, create directory structure, verify build
 
-- [ ] `go mod init gopengai`
+- [x] `go mod init gopengai`
 - [x] Create directory structure per diagram `06-package-structure`:
   ```
   ├── cmd/api/main.go
@@ -66,7 +66,7 @@ Phase 10 (Docs)        ████░░░░░░  40%  (README, diagrams, M
           ├── analyst.md
           └── summarizer.md
   ```
-- [ ] Add dependencies: `github.com/ncruces/go-sqlite3`, `github.com/pressly/goose/v3`, `github.com/spf13/cobra`, `gopkg.in/yaml.v3`
+- [x] Add dependencies: `github.com/ncruces/go-sqlite3`, `github.com/pressly/goose/v3`, `github.com/spf13/cobra`, `gopkg.in/yaml.v3`
 - [x] Create `gopengai.json.example` with server, LLM, agents_dir, data_dir, default_agent fields
 - [x] Create `.gitignore`:
   ```
@@ -87,8 +87,8 @@ Phase 10 (Docs)        ████░░░░░░  40%  (README, diagrams, M
   .vscode/
   .zed/
   ```
-- [ ] Verify `go build ./cmd/api/` and `go build ./cmd/cli/` succeed (empty main files)
-- [ ] Verify `go vet ./...` passes
+- [x] Verify `go build ./cmd/api/` and `go build ./cmd/cli/` succeed (empty main files)
+- [x] Verify `go vet ./...` passes
 
 ---
 
