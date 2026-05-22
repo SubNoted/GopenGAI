@@ -1,6 +1,6 @@
 # GoPengAI — Implementation TODO
 
-> **Last synced:** 2026-05-23 (Directory structure, SQL schemas/queries, configs, docs complete. All 24 Go files are empty stubs. No go.mod — build will not compile.)
+> **Last synced:** 2026-05-23 (MVP impl done: config, LLM client, HTTP server. DB/agents/tools/history still stubs.)
 > **Based on:** 10 architecture diagrams (01-container through 10-gopengai-container)
 > **Tech Stack:** Go 1.21+, SQLite3 (ncruces/go-sqlite3), sqlc, Goose, Cobra CLI, net/http, SSE
 > **Approach:** Pure Go — no CGo, no Python. All phases for semester 4 delivery. Local dev deployment.
@@ -8,17 +8,17 @@
 > **DB Design:** Adapted OpenCode SQLite model — 3 base tables extended for agents, memory, delegation
 > **Order:** Sequential phases. Each phase builds on the previous.
 
-## Overall Progress: ~15%
+## Overall Progress: ~25%
 
 ```
-Phase 0 (Bootstrap)    ████░░░░░░  40%  (dirs, gitignore, config done; no go.mod, build fails)
-Phase 1 (Config+DB)    ███░░░░░░░  30%  (SQL schema + queries done; no Go code, sqlc not run)
-Phase 2 (LLM Client)   ░░░░░░░░░░   0%
+Phase 0 (Bootstrap)    ██████░░░░  60%  (dirs, gitignore, go.mod, config done; cli is empty stub)
+Phase 1 (Config+DB)    ████░░░░░░  40%  (Config struct done; SQL+sqlc done; no db code/sqlc-gen)
+Phase 2 (LLM Client)   ████████░░  80%  (types + client done; no streaming, no tool_call structs)
 Phase 3 (Agent Types)  ░░░░░░░░░░   0%
 Phase 4 (History Tree) ░░░░░░░░░░   0%
 Phase 5 (Tools)        ░░░░░░░░░░   0%
 Phase 6 (Agent Engine) ░░░░░░░░░░   0%
-Phase 7 (HTTP API)     ░░░░░░░░░░   0%
+Phase 7 (HTTP API)     ██░░░░░░░░  20%  (health + chat handler + routes done; no SSE/CRUD/middleware)
 Phase 8 (CLI)          ░░░░░░░░░░   0%
 Phase 9 (Testing)      ░░░░░░░░░░   0%
 Phase 10 (Docs)        ████░░░░░░  40%  (README, diagrams, Makefile done; no agent examples)
@@ -97,8 +97,8 @@ Phase 10 (Docs)        ████░░░░░░  40%  (README, diagrams, M
 **Goal:** Config loading from gopengai.json, SQLite connection, Goose migrations, sqlc-generated CRUD
 
 ### 1.1 Configuration (`internal/config/config.go`)
-- [ ] ~~Define `Config` struct matching `gopengai.json` schema~~ *(schema exists in `gopengai.json.example`, but Go struct not defined)*
-- [ ] `Load(path string) (*Config, error)` — read JSON file, apply defaults
+- [x] Define `Config` struct matching `gopengai.json` schema (ServerConfig, LLMConfig, AgentsDir, DataDir, DefaultAgent)
+- [x] `Load(path string) (*Config, error)` — read JSON file, apply defaults
 - [ ] Env var overrides: `GOPENGAI_PORT`, `GOPENGAI_LLM_API_KEY`, etc.
 - [ ] CLI flag overrides: `--port`, `--config`
 
@@ -148,18 +148,16 @@ Phase 10 (Docs)        ████░░░░░░  40%  (README, diagrams, M
 **Goal:** OpenAI-compatible HTTP client for LLM calls with tool support
 
 ### 2.1 LLM Types (`internal/llm/types.go`)
-- [ ] Define structs matching OpenAI `/v1/chat/completions` format:
-  - `CompletionRequest`, `Message`, `ToolDefinition`, `ToolFunction`
-  - `CompletionResponse`, `Choice`, `MessageResponse`, `ToolCall`, `Usage`
-- [ ] All fields with correct JSON tags
+- [x] Define structs: `ChatCompletionRequest`, `Message`, `ChatCompletionResponse`, `Choice`, `Usage`, `APIError` — basic OpenAI-compatible types with correct JSON tags
+- [ ] Add `ToolDefinition`, `ToolFunction`, `ToolCall`, `MessageResponse` structs for tool calling support
 
 ### 2.2 LLM Client (`internal/llm/client.go`)
-- [ ] `Client` struct with config (`BaseURL`, `APIKey`, `Model`, `MaxIterations`)
-- [ ] `NewClient(cfg config.LLMConfig) *Client`
-- [ ] `ChatCompletion(ctx, *CompletionRequest) (*CompletionResponse, error)` — HTTP POST
+- [x] `Client` struct with `BaseURL`, `APIKey`, `Model`, `HTTPClient`
+- [x] `NewClient(baseURL, apiKey, model string) *Client`
+- [x] `ChatCompletion(ctx, messages) (*ChatCompletionResponse, error)` — HTTP POST with context + error handling
 - [ ] Support `tool_choice: "auto"` for tool calling
-- [ ] Error handling for non-200 responses with structured error type
-- [ ] Context cancellation support (for abort)
+- [ ] Structured error type for non-200 responses (currently plain `fmt.Errorf`)
+- [ ] Accept `config.LLMConfig` instead of 3 separate params in `NewClient`
 
 ### 2.3 Streaming Skeleton (`internal/llm/stream.go`)
 - [ ] SSE parsing infrastructure
@@ -355,12 +353,13 @@ Phase 10 (Docs)        ████░░░░░░  40%  (README, diagrams, M
 - [ ] `HandleSessionSSE(w, r)` — handler for `GET /session/:id/events`
 
 ### 7.3 Routes (`internal/api/routes.go`)
-- [ ] `RegisterRoutes(mux, handler)` — wire all routes
+- [x] `RegisterRoutes(mux, handler)` — wire `/health` and `/v1/chat/completions`
+- [ ] Add remaining routes (sessions, agents, memory, SSE, control, OpenAI-compat)
 
 ### 7.4 Handlers (`internal/api/handler.go`)
 
 **Global:**
-- [ ] `GET /health` → `{"status": "ok", "version": "...", "uptime": "..."}`
+- [x] `GET /health` → `{"status": "ok"}`
 - [ ] `GET /event` → Global SSE stream (subscribe + hold connection)
 
 **Session CRUD:**
@@ -396,7 +395,7 @@ Phase 10 (Docs)        ████░░░░░░  40%  (README, diagrams, M
 - [ ] `POST /session/:id/abort` → abort running generation
 
 **OpenAI-Compatible:**
-- [ ] `POST /v1/chat/completions` → map to internal engine, return OpenAI format
+- [x] `POST /v1/chat/completions` → forwards to LLM, returns OpenAI format (basic pass-through, no engine integration yet)
 - [ ] `GET /v1/models` → list agents as models
 
 ### 7.5 Middleware (`internal/api/middleware.go`)
@@ -406,13 +405,13 @@ Phase 10 (Docs)        ████░░░░░░  40%  (README, diagrams, M
 - [ ] `AuthMiddleware` skeleton (future: API key / JWT)
 
 ### 7.6 Server Entrypoint (`cmd/api/main.go`)
-- [ ] Load config from `gopengai.json` (or `--config` flag)
+- [x] Load config from `gopengai.json` (hardcoded path + os.Args fallback)
 - [ ] Open database + run migrations
 - [ ] Initialize agent registry from `agents/` directory
 - [ ] Initialize tool registry + register all tools
 - [ ] Create EventBus, LLM client, Engine
-- [ ] Create API handler + register routes
-- [ ] Start HTTP server on configured host:port
+- [x] Create API handler + register routes (minimal MVP: only health + chat)
+- [x] Start HTTP server on configured host:port
 - [ ] Graceful shutdown (SIGINT/SIGTERM) — drain SSE connections, wait for engine goroutines
 
 ---
@@ -485,13 +484,13 @@ Phase 10 (Docs)        ████░░░░░░  40%  (README, diagrams, M
 ### 10.1 Documentation
 - [ ] Update `README.md` with actual API examples, CLI usage, SSE examples
 - [ ] Create `agents/examples/` with pre-built agents (researcher, analyst, summarizer)
-- [ ] Create `gopengai.json.example` with all configurable fields documented
+- [x] Create `gopengai.json.example` with all configurable fields documented
 - [ ] Update all diagrams in `DOCS/diagrams/` if needed
 
 ### 10.2 Code Quality
-- [ ] `go vet ./...` — clean
+- [x] `go vet ./...` — clean
 - [ ] `go fmt ./...` — formatted
-- [ ] Add `Makefile` with common commands:
+- [x] Add `Makefile` with common commands:
   ```makefile
   build:    go build ./cmd/api/ ./cmd/cli/
   run:      go run ./cmd/api/
