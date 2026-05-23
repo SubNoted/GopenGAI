@@ -36,14 +36,31 @@ func main() {
 	}
 	log.Printf("database migrated: %s", cfg.DataDir+"/gopengai.db")
 
+	// Initialize sqlc-generated queries
+	queries := db.New(database)
+
 	client := llm.NewClientFromConfig(cfg.LLM)
-	handler := &api.Handler{LLM: client}
+
+	handler := &api.Handler{
+		LLM:    client,
+		DB:     queries,
+		SQLDB:  database,
+		Config: cfg,
+	}
 
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux, handler)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	log.Printf("GoPengAI listening on %s", addr)
+	log.Printf("Endpoints:")
+	log.Printf("  POST /session                     create session")
+	log.Printf("  GET  /session                     list sessions")
+	log.Printf("  GET  /session/{id}                get session + messages")
+	log.Printf("  DELETE /session/{id}              delete session")
+	log.Printf("  POST /session/{id}/message        send message (history-aware)")
+	log.Printf("  POST /v1/chat/completions         OpenAI-compatible (no history)")
+	log.Printf("  GET  /health                      health check")
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatalf("server error: %v", err)
 	}

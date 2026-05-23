@@ -1,5 +1,5 @@
--- Phase 1: Initial schema
--- Creates core tables for sessions, messages, agents, memory, and delegation
+-- +goose Up
+-- +goose StatementBegin
 
 -- Sessions (OpenCode-compatible base)
 CREATE TABLE IF NOT EXISTS sessions (
@@ -112,3 +112,13 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages (session_id);
 CREATE INDEX IF NOT EXISTS idx_messages_parent_id ON messages (parent_id);
 CREATE INDEX IF NOT EXISTS idx_memory_agent_name ON memory (agent_name);
 CREATE INDEX IF NOT EXISTS idx_delegation_logs_parent ON delegation_logs (parent_message_id);
+
+-- +goose StatementEnd
+-- +goose Down
+-- +goose StatementBegin
+DROP TABLE IF EXISTS delegation_logs;
+DROP TABLE IF EXISTS memory;
+DROP TABLE IF EXISTS agents;
+DROP TABLE IF EXISTS messages;
+DROP TABLE IF EXISTS sessions;
+-- +goose StatementEnd

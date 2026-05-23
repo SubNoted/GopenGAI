@@ -1,6 +1,6 @@
 # GoPengAI — Implementation TODO
 
-> **Last synced:** 2026-05-23 (Phase 1 complete: config+DB+sqlc all wired)
+> **Last synced:** 2026-05-23 (Phase 7 + 8 partial: sync session CRUD + CLI built; async/SSE/tree still planned)
 > **Based on:** 10 architecture diagrams (01-container through 10-gopengai-container)
 > **Tech Stack:** Go 1.21+, SQLite3 (ncruces/go-sqlite3), sqlc, Goose, Cobra CLI, net/http, SSE
 > **Approach:** Pure Go — no CGo, no Python. All phases for semester 4 delivery. Local dev deployment.
@@ -8,7 +8,7 @@
 > **DB Design:** Adapted OpenCode SQLite model — 3 base tables extended for agents, memory, delegation
 > **Order:** Sequential phases. Each phase builds on the previous.
 
-## Overall Progress: ~40%
+## Overall Progress: ~45%
 
 ```
 Phase 0 (Bootstrap)    ██████████ 100%  (complete)
@@ -18,8 +18,8 @@ Phase 3 (Agent Types)  ░░░░░░░░░░   0%
 Phase 4 (History Tree) ░░░░░░░░░░   0%
 Phase 5 (Tools)        ░░░░░░░░░░   0%
 Phase 6 (Agent Engine) ░░░░░░░░░░   0%
-Phase 7 (HTTP API)     ██░░░░░░░░  20%  (health + chat handler + routes done; no SSE/CRUD/middleware)
-Phase 8 (CLI)          ░░░░░░░░░░   0%
+Phase 7 (HTTP API)     ███░░░░░░░  25%  (sync session CRUD + linear chat built; no SSE/async/branches/agents/memory)
+Phase 8 (CLI)          ██░░░░░░░░  20%  (sync chat + session commands built; no SSE streaming/agents/memory/branches)
 Phase 9 (Testing)      ░░░░░░░░░░   0%
 Phase 10 (Docs)        ████░░░░░░  40%  (README, diagrams, Makefile done; no agent examples)
 ```
@@ -354,48 +354,40 @@ Phase 10 (Docs)        ████░░░░░░  40%  (README, diagrams, M
 
 ### 7.3 Routes (`internal/api/routes.go`)
 - [x] `RegisterRoutes(mux, handler)` — wire `/health` and `/v1/chat/completions`
-- [ ] Add remaining routes (sessions, agents, memory, SSE, control, OpenAI-compat)
+- [x] Added sync session CRUD + linear chat routes (Go 1.22+ method routing)
+- [ ] Refactor to async pattern: replace sync `POST /session/{id}/message` with 202 + SSE
+- [ ] Add remaining routes (agents, memory, SSE, control, OpenAI-compat)
 
 ### 7.4 Handlers (`internal/api/handler.go`)
 
-**Global:**
+> **⚠️ Current state (MVP):** Session CRUD and chat handlers are built synchronously. They work but use **linear** history (flat `ListMessagesBySession`, no tree traversal) and call the LLM **directly** (no agent engine).
+> **Planned state:** Handlers should be thin wrappers that enqueue work to the agent engine and return 202 + stream results via SSE.
+
+**Done (sync MVP — may need refactoring for async):**
 - [x] `GET /health` → `{"status": "ok"}`
+- [x] `POST /session` → create session `{title?, agent_name?}` → 201
+- [x] `GET /session` → list all sessions
+- [x] `GET /session/{id}` → get session detail + linear messages (not tree)
+- [x] `DELETE /session/{id}` → delete session + messages → 200
+- [x] `POST /session/{id}/message` → **sync**: save msg → call LLM directly → return response (no SSE, no agent engine)
+- [x] `POST /v1/chat/completions` → forwards to LLM, returns OpenAI format (basic pass-through)
+
+**Still planned (async + event-driven):**
 - [ ] `GET /event` → Global SSE stream (subscribe + hold connection)
-
-**Session CRUD:**
-- [ ] `GET /session` → list all sessions
-- [ ] `POST /session` → create session `{title?, agent_name?}` → 201
-- [ ] `GET /session/:id` → get session detail + active branch
 - [ ] `PATCH /session/:id` → update session `{title?}`
-- [ ] `DELETE /session/:id` → delete session + messages → 200
-
-**Session Status:**
 - [ ] `GET /session/status` → status of all sessions
-
-**Messages (Async):**
-- [ ] `POST /session/:id/message` → save user msg, spawn engine goroutine → 202
-- [ ] `GET /session/:id/messages` → get active branch messages
+- [ ] **Refactor** `POST /session/:id/message` → save user msg, spawn engine goroutine → **202**, stream via SSE
+- [ ] `GET /session/:id/messages` → get **active branch** messages (recursive CTE)
 - [ ] `GET /session/:id/events` → per-session SSE stream
-
-**Branches:**
 - [ ] `GET /session/:id/branches` → list all leaf nodes
 - [ ] `POST /session/:id/fork` → fork session at message `{message_id}`
 - [ ] `PUT /session/:id/branch` → select active branch `{leaf_id}`
 - [ ] `PATCH /messages/:id` → edit message → new branch `{content}`
-
-**Agents:**
 - [ ] `GET /agents` → list registered agents
 - [ ] `GET /agents/:name` → get agent detail
-
-**Memory:**
 - [ ] `GET /memory?agent=NAME` → list memory facts
 - [ ] `GET /memory/:key?agent=NAME` → get specific fact
-
-**Control:**
 - [ ] `POST /session/:id/abort` → abort running generation
-
-**OpenAI-Compatible:**
-- [x] `POST /v1/chat/completions` → forwards to LLM, returns OpenAI format (basic pass-through, no engine integration yet)
 - [ ] `GET /v1/models` → list agents as models
 
 ### 7.5 Middleware (`internal/api/middleware.go`)
@@ -409,35 +401,34 @@ Phase 10 (Docs)        ████░░░░░░  40%  (README, diagrams, M
 - [x] Open database + run migrations
 - [ ] Initialize agent registry from `agents/` directory
 - [ ] Initialize tool registry + register all tools
-- [ ] Create EventBus, LLM client, Engine
-- [x] Create API handler + register routes (minimal MVP: only health + chat)
+- [ ] Create EventBus, Agent Engine
+- [x] Create API handler (with DB + Config wired directly) + register routes
 - [x] Start HTTP server on configured host:port
 - [ ] Graceful shutdown (SIGINT/SIGTERM) — drain SSE connections, wait for engine goroutines
 
 ---
 
 ## Phase 8: CLI Client
-**Dependencies:** Phase 7
+**Dependencies:** Phase 7 (sync MVP built first; async/SSE integration still planned)
 **Goal:** Cobra-based CLI client with chat, session, agent, and memory commands
 
 ### 8.1 CLI Entrypoint (`cmd/cli/main.go`)
-- [ ] Cobra root command: `gopengai` with `--server-url` flag (default `http://localhost:8080`)
-- [ ] Global `--json` flag for machine-readable output
+- [x] Cobra root command: `gopengai` with `--server-url` flag (default `http://localhost:8080`)
 
 ### 8.2 Chat Command
-- [ ] `gopengai chat "message" [--session-id ID] [--agent NAME]`
-- [ ] Subscribe to session SSE, send message, display streaming response
-- [ ] Auto-create session if no `--session-id`
-- [ ] Interactive mode: `gopengai chat` — REPL loop
+- [x] `gopengai chat "message" [--session-id ID] [--agent NAME]` — **sync**: send message, wait for JSON response
+- [x] Interactive mode: `gopengai chat` — REPL loop (sync polling)
+- [ ] Upgrade to SSE streaming: subscribe to session SSE, send message, display streamed tokens
+- [ ] Display model name + usage in output
 
 ### 8.3 Session Commands
-- [ ] `gopengai sessions` → list all sessions
-- [ ] `gopengai sessions get <id>` → show session + active branch
-- [ ] `gopengai sessions create [--title T] [--agent NAME]` → create session
-- [ ] `gopengai sessions delete <id>` → delete session
-- [ ] `gopengai sessions branches <id>` → list all leaves
-- [ ] `gopengai sessions fork <id> --message <msg_id>` → fork at message
-- [ ] `gopengai sessions switch <id> --leaf <leaf_id>` → select branch
+- [x] `gopengai session list` → list all sessions
+- [x] `gopengai session show <id>` → show session + linear messages
+- [x] `gopengai session create [--title T] [--agent NAME]` → create session
+- [x] `gopengai session delete <id>` → delete session
+- [ ] `gopengai session branches <id>` → list all leaves (requires Phase 4 tree implementation)
+- [ ] `gopengai session fork <id> --message <msg_id>` → fork at message (requires Phase 4)
+- [ ] `gopengai session switch <id> --leaf <leaf_id>` → select branch (requires Phase 4)
 
 ### 8.4 Agent Commands
 - [ ] `gopengai agents` → list available agents

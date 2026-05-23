@@ -14,12 +14,10 @@
 
 | Feature | Why Skip |
 |---------|----------|
-| SQLite / sqlc / Goose | No history to persist |
 | Agent registry / .md loader | Single hardcoded agent |
 | Tools (web_fetch, memory, delegate) | MVP = pure Q&A |
 | SSE event streaming | Synchronous request/response |
-| History tree / branches | No conversation memory |
-| CLI client | curl is enough |
+| History tree / branches | Linear history only |
 | Streaming LLM output | Simple non-streaming first |
 
 ---
@@ -33,6 +31,8 @@ internal/llm/client.go      → HTTP client for OpenAI API
 internal/api/handler.go     → POST /v1/chat/completions handler
 internal/api/routes.go      → Route registration
 cmd/api/main.go             → Wire everything + start server
+internal/db/                → SQLite + migrations (for session persistence)
+cmd/cli/main.go             → Cobra CLI client (sync session CRUD + chat)
 ```
 
 ---
@@ -380,17 +380,19 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 | 1 | `internal/config/config.go` | ~45 | Load JSON config with defaults |
 | 2 | `internal/llm/types.go` | ~40 | OpenAI request/response structs |
 | 3 | `internal/llm/client.go` | ~60 | HTTP client → OpenAI API |
-| 4 | `internal/api/handler.go` | ~50 | POST /v1/chat/completions handler |
-| 5 | `internal/api/routes.go` | ~10 | Route registration |
-| 6 | `cmd/api/main.go` | ~35 | Wire + start server |
-| **Total** | | **~240** | **Working AI agent** |
+| 4 | `internal/api/handler.go` | ~200 | Session CRUD + sync history-aware chat + pass-through |
+| 5 | `internal/api/routes.go` | ~22 | Route registration (Go 1.22+ method routing) |
+| 6 | `cmd/api/main.go` | ~66 | Wire config + DB + LLM + start server |
+| 7 | `internal/db/` | ~500 | SQLite schema, migrations, sqlc-generated queries |
+| 8 | `cmd/cli/main.go` | ~402 | Cobra CLI: sync chat + session CRUD |
+| **Total** | | **~1340** | **Working AI agent with sync CLI** |
 
 ---
 
 ## After MVP Works — Next Steps (for full TODO.md)
 
-1. **History:** Add SQLite + messages table → conversation memory
-2. **Streaming:** Add SSE → real-time token delivery
-3. **Agent Loader:** Parse `.md` files → configurable system prompts
-4. **Tools:** Add tool interface → web_fetch, memory, delegate
-5. **CLI:** Add Cobra CLI → terminal chat client
+1. **Async + SSE:** Refactor `POST /session/{id}/message` to 202 + event stream
+2. **Agent Engine:** Build Phase 3-6 (agent types, tree history, tools, engine loop)
+3. **Streaming CLI:** Upgrade CLI to consume SSE events for real-time output
+4. **Branch Management:** Add branch select/fork/edit to API + CLI
+5. **Agents & Memory:** Add agent registry commands and memory listing to CLI
