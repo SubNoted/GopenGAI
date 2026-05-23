@@ -1,6 +1,6 @@
 # GoPengAI — Implementation TODO
 
-> **Last synced:** 2026-05-23 (Phase 3 complete; Phase 7 + 8 partial: sync session CRUD + CLI built; async/SSE/tree still planned)
+> **Last synced:** 2026-05-23 (Phase 4 complete; Phase 7 + 8 partial: sync session CRUD + CLI built; async/SSE still planned)
 > **Based on:** 10 architecture diagrams (01-container through 10-gopengai-container)
 > **Tech Stack:** Go 1.21+, SQLite3 (ncruces/go-sqlite3), sqlc, Goose, Cobra CLI, net/http, SSE
 > **Approach:** Pure Go — no CGo, no Python. All phases for semester 4 delivery. Local dev deployment.
@@ -8,14 +8,14 @@
 > **DB Design:** Adapted OpenCode SQLite model — 3 base tables extended for agents, memory, delegation
 > **Order:** Sequential phases. Each phase builds on the previous.
 
-## Overall Progress: ~49%
+## Overall Progress: ~54%
 
 ```
 Phase 0 (Bootstrap)    ██████████ 100%  (complete)
 Phase 1 (Config+DB)    ██████████ 100%  (complete)
 Phase 2 (LLM Client)   ██████████ 100%  (complete)
 Phase 3 (Agent Types)  ██████████ 100%  (complete)
-Phase 4 (History Tree) ░░░░░░░░░░   0%
+Phase 4 (History Tree) ██████████ 100%  (complete)
 Phase 5 (Tools)        ░░░░░░░░░░   0%
 Phase 6 (Agent Engine) ░░░░░░░░░░   0%
 Phase 7 (HTTP API)     ███░░░░░░░  25%  (sync session CRUD + linear chat built; no SSE/async/branches/agents/memory)
@@ -216,27 +216,37 @@ Phase 10 (Docs)        ████░░░░░░  40%  (README, diagrams, M
 **Goal:** Tree-structured conversation history with branch support (uses sqlc-generated queries)
 
 ### 4.1 Repository Wrapper (`internal/history/repo.go`)
-- [ ] Thin wrapper around sqlc-generated `db.Querier` for history-specific operations
-- [ ] `InsertMessage(ctx, db, msg) error` — delegates to `db.CreateMessage`
-- [ ] `GetMessagesForSession(ctx, db, sessionID) ([]Message, error)` — delegates to `db.ListMessagesBySession`
-- [ ] `GetBranchFromRootTo(ctx, db, messageID) ([]Message, error)` — delegates to `db.GetBranchFromRootTo` (recursive CTE)
-- [ ] `GetAllLeaves(ctx, db, sessionID) ([]Message, error)` — delegates to `db.GetAllLeaves`
+- [x] Thin wrapper around sqlc-generated `db.Querier` for history-specific operations
+- [x] `InsertMessage(ctx, params) (Message, error)` — delegates to `db.CreateMessage`
+- [x] `GetMessagesForSession(ctx, sessionID) ([]Message, error)` — delegates to `db.ListMessagesBySession`
+- [x] `GetActiveBranch(ctx, sessionID) ([]Message, error)` — loads active branch via recursive CTE or tree fallback
+- [x] `GetActiveBranchByLeafID(ctx, leafID) ([]Message, error)` — delegates to `db.GetBranchFromRootTo` (recursive CTE)
+- [x] `GetAllLeaves(ctx, sessionID) ([]Message, error)` — delegates to `db.GetAllLeaves`
+- [x] `GetMessageByID(ctx, id) (Message, error)` — delegates to `db.GetMessage`
+- [x] `UpdateActiveLeaf(ctx, sessionID, leafID) error` — sets active_leaf_id without read-modify-write race
 
 ### 4.2 Tree Operations (`internal/history/tree.go`)
-- [ ] `BuildTree(messages) *TreeNode` — construct in-memory tree from flat list
-- [ ] `FindActiveLeaf(tree) *TreeNode` — longest root→leaf path
-- [ ] `GetPathFromRoot(tree, node) []Message` — traverse root to node
-- [ ] `InsertNode(tree, parentID, newMessage) *TreeNode` — add child
+- [x] `BuildTree(messages) []*TreeNode` — construct in-memory tree from flat list (handles mixed roots + orphans)
+- [x] `GetLongestLeaf(roots) *TreeNode` — longest root→leaf path (default active branch)
+- [x] `GetPathFromRoot(node) []*TreeNode` — traverse root to node via Parent pointer
+- [x] `InsertNode(roots, parentID, msg) *TreeNode` — add child to in-memory tree
+- [x] `FindNode(roots, id) *TreeNode` — BFS node lookup
+- [x] `GetLeafByID(roots, id) *TreeNode` — find leaf by ID
+- [x] `IsLeaf(node) bool` — leaf predicate
+- [x] `ToAgentMessages(messages) []agent.Message` — convert DB messages to agent messages
+- [x] `TreeNode` struct with `Parent` pointer for upward traversal
 
 ### 4.3 Branch Management (`internal/history/branch.go`)
-- [ ] `SelectBranch(db, sessionID, leafMessageID) error` — set active_leaf_id
-- [ ] `EditMessage(db, originalMsgID, newContent) (newMsgID, error)` — new branch from parent of original
-- [ ] `ForkSession(db, sessionID, messageID) (newSessionID, error)` — create new session branching from point
+- [x] `SelectLeaf(ctx, sessionID, leafID) error` — set active_leaf_id with ownership & leaf validation
+- [x] `EditMessage(ctx, params) (newMsgID, error)` — new branch from parent of original (in transaction)
+- [x] `ForkSession(ctx, params) (newSessionID, error)` — create new session branching from point (in transaction)
+- [x] Input validation: Role allowlist, Content size limit (100KB), FromMessageID ownership check
+- [x] All write operations wrapped in `sql.Tx` with atomic commit/rollback
 
-### 4.4 Session Context Builder
-- [ ] `BuildContext(db, sessionID) ([]llm.Message, error)` — load branch, convert to LLM messages
-- [ ] Include system prompt from agent
-- [ ] Truncate if branch history exceeds context window limit
+### 4.4 Session Context Builder (`internal/history/context.go`)
+- [x] `BuildContext(ctx, sessionID, systemPrompt, maxTokens) ([]llm.Message, error)` — load branch, prepend system prompt, convert to LLM messages
+- [x] Truncate if branch history exceeds context window limit (oldest messages dropped first, system prompt preserved)
+- [x] Token estimation heuristic (~4 chars/token)
 
 ---
 
