@@ -13,7 +13,7 @@
 ```
 Phase 0 (Bootstrap)    ██████████ 100%  (complete)
 Phase 1 (Config+DB)    ██████████ 100%  (complete)
-Phase 2 (LLM Client)   ████████░░  80%  (types + client done; no streaming, no tool_call structs)
+Phase 2 (LLM Client)   ██████████ 100%  (complete)
 Phase 3 (Agent Types)  ░░░░░░░░░░   0%
 Phase 4 (History Tree) ░░░░░░░░░░   0%
 Phase 5 (Tools)        ░░░░░░░░░░   0%
@@ -149,20 +149,20 @@ Phase 10 (Docs)        ████░░░░░░  40%  (README, diagrams, M
 
 ### 2.1 LLM Types (`internal/llm/types.go`)
 - [x] Define structs: `ChatCompletionRequest`, `Message`, `ChatCompletionResponse`, `Choice`, `Usage`, `APIError` — basic OpenAI-compatible types with correct JSON tags
-- [ ] Add `ToolDefinition`, `ToolFunction`, `ToolCall`, `MessageResponse` structs for tool calling support
+- [x] Add `ToolDefinition`, `ToolFunction`, `ToolCall`, `MessageResponse` structs for tool calling support
 
 ### 2.2 LLM Client (`internal/llm/client.go`)
 - [x] `Client` struct with `BaseURL`, `APIKey`, `Model`, `HTTPClient`
 - [x] `NewClient(baseURL, apiKey, model string) *Client`
 - [x] `ChatCompletion(ctx, messages) (*ChatCompletionResponse, error)` — HTTP POST with context + error handling
-- [ ] Support `tool_choice: "auto"` for tool calling
-- [ ] Structured error type for non-200 responses (currently plain `fmt.Errorf`)
-- [ ] Accept `config.LLMConfig` instead of 3 separate params in `NewClient`
+- [x] Support `tool_choice: "auto"` for tool calling
+- [x] Structured error type for non-200 responses (currently plain `fmt.Errorf`)
+- [x] Accept `config.LLMConfig` instead of 3 separate params in `NewClient`
 
 ### 2.3 Streaming Skeleton (`internal/llm/stream.go`)
-- [ ] SSE parsing infrastructure
-- [ ] `StreamCompletion(ctx, *CompletionRequest) (<-chan *CompletionResponse, error)`
-- [ ] Mark as future feature — focus on non-streaming first
+- [x] SSE parsing infrastructure
+- [x] `StreamCompletion(ctx, *CompletionRequest) (<-chan *CompletionResponse, error)`
+- [x] Mark as future feature — focus on non-streaming first
 
 ---
 

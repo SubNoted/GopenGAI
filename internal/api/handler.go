@@ -14,8 +14,10 @@ type Handler struct {
 
 // ChatRequest is the request body from a client hitting the chat endpoint.
 type ChatRequest struct {
-	Model    string        `json:"model"`
-	Messages []llm.Message `json:"messages"`
+	Model      string               `json:"model"`
+	Messages   []llm.Message        `json:"messages"`
+	Tools      []llm.ToolDefinition `json:"tools,omitempty"`
+	ToolChoice json.RawMessage      `json:"tool_choice,omitempty"`
 }
 
 // HandleChatCompletion accepts POST /v1/chat/completions, forwards to LLM client, returns response.
@@ -36,7 +38,15 @@ func (h *Handler) HandleChatCompletion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := h.LLM.ChatCompletion(r.Context(), req.Messages)
+	// Pass tools and tool_choice from the incoming request.
+	llmReq := &llm.ChatCompletionRequest{
+		Model:      req.Model,
+		Messages:   req.Messages,
+		Tools:      req.Tools,
+		ToolChoice: req.ToolChoice,
+	}
+
+	resp, err := h.LLM.ChatCompletion(r.Context(), llmReq)
 	if err != nil {
 		http.Error(w, "llm error: "+err.Error(), http.StatusBadGateway)
 		return

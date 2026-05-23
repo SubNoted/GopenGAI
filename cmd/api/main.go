@@ -36,7 +36,7 @@ func main() {
 	}
 	log.Printf("database migrated: %s", cfg.DataDir+"/gopengai.db")
 
-	client := llm.NewClient(cfg.LLM.BaseURL, cfg.LLM.APIKey, cfg.LLM.Model)
+	client := llm.NewClientFromConfig(cfg.LLM)
 	handler := &api.Handler{LLM: client}
 
 	mux := http.NewServeMux()
