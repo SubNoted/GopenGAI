@@ -72,6 +72,12 @@ func LoadAgent(path string) (*Agent, error) {
 		ParentAgent:  fm.ParentAgent,
 		Permissions:  fm.Permissions,
 		ConfigPath:   path,
+
+		// OpenCode-style fields.
+		Description: fm.Description,
+		Mode:        fm.Mode,
+		Color:       fm.Color,
+		AgentPerms:  fm.AgentPerms,
 	}
 
 	return agent, nil
