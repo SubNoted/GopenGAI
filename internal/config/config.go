@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 )
 
 // Config is the top-level configuration matching gopengai.json schema.
@@ -31,6 +32,11 @@ type LLMConfig struct {
 }
 
 // Load reads a JSON config file from path and returns a Config with defaults applied.
+// Environment variable overrides are applied after JSON loading and defaults:
+//
+//	GOPENGAI_PORT, GOPENGAI_HOST, GOPENGAI_LLM_API_KEY, GOPENGAI_LLM_BASE_URL,
+//	GOPENGAI_LLM_MODEL, GOPENGAI_LLM_PROVIDER, GOPENGAI_LLM_MAX_ITERATIONS,
+//	GOPENGAI_AGENTS_DIR, GOPENGAI_DATA_DIR, GOPENGAI_DEFAULT_AGENT
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -42,7 +48,17 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config file: %w", err)
 	}
 
-	// Apply defaults
+	// Apply defaults (lowest priority)
+	applyDefaults(&cfg)
+
+	// Apply environment variable overrides (medium priority)
+	applyEnvOverrides(&cfg)
+
+	return &cfg, nil
+}
+
+// applyDefaults sets default values for all zero-valued config fields.
+func applyDefaults(cfg *Config) {
 	if cfg.Server.Host == "" {
 		cfg.Server.Host = "0.0.0.0"
 	}
@@ -70,6 +86,42 @@ func Load(path string) (*Config, error) {
 	if cfg.DefaultAgent == "" {
 		cfg.DefaultAgent = "default"
 	}
+}
 
-	return &cfg, nil
+// applyEnvOverrides reads environment variables and overrides config fields.
+func applyEnvOverrides(cfg *Config) {
+	if v := os.Getenv("GOPENGAI_HOST"); v != "" {
+		cfg.Server.Host = v
+	}
+	if v := os.Getenv("GOPENGAI_PORT"); v != "" {
+		if port, err := strconv.Atoi(v); err == nil {
+			cfg.Server.Port = port
+		}
+	}
+	if v := os.Getenv("GOPENGAI_LLM_API_KEY"); v != "" {
+		cfg.LLM.APIKey = v
+	}
+	if v := os.Getenv("GOPENGAI_LLM_BASE_URL"); v != "" {
+		cfg.LLM.BaseURL = v
+	}
+	if v := os.Getenv("GOPENGAI_LLM_MODEL"); v != "" {
+		cfg.LLM.Model = v
+	}
+	if v := os.Getenv("GOPENGAI_LLM_PROVIDER"); v != "" {
+		cfg.LLM.Provider = v
+	}
+	if v := os.Getenv("GOPENGAI_LLM_MAX_ITERATIONS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.LLM.MaxIterations = n
+		}
+	}
+	if v := os.Getenv("GOPENGAI_AGENTS_DIR"); v != "" {
+		cfg.AgentsDir = v
+	}
+	if v := os.Getenv("GOPENGAI_DATA_DIR"); v != "" {
+		cfg.DataDir = v
+	}
+	if v := os.Getenv("GOPENGAI_DEFAULT_AGENT"); v != "" {
+		cfg.DefaultAgent = v
+	}
 }

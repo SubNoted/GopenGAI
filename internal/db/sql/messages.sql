@@ -11,7 +11,7 @@ SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC;
 
 -- name: GetBranchFromRootTo :many
 WITH RECURSIVE branch AS (
-    SELECT * FROM messages WHERE id = ?
+    SELECT * FROM messages WHERE messages.id = ?
     UNION ALL
     SELECT m.* FROM messages m
     INNER JOIN branch b ON m.id = b.parent_id
@@ -21,7 +21,7 @@ SELECT * FROM branch ORDER BY created_at ASC;
 -- name: GetAllLeaves :many
 SELECT m.* FROM messages m
 WHERE m.session_id = ?
-AND m.id NOT IN (SELECT parent_id FROM messages WHERE parent_id IS NOT NULL AND session_id = ?);
+AND m.id NOT IN (SELECT sub.parent_id FROM messages sub WHERE sub.parent_id IS NOT NULL AND sub.session_id = ?);
 
 -- name: UpdateMessage :exec
 UPDATE messages
