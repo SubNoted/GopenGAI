@@ -1,6 +1,6 @@
 # GoPengAI — Implementation TODO
 
-> **Last synced:** 2026-05-23 (Phase 7 + 8 partial: sync session CRUD + CLI built; async/SSE/tree still planned)
+> **Last synced:** 2026-05-23 (Phase 3 complete; Phase 7 + 8 partial: sync session CRUD + CLI built; async/SSE/tree still planned)
 > **Based on:** 10 architecture diagrams (01-container through 10-gopengai-container)
 > **Tech Stack:** Go 1.21+, SQLite3 (ncruces/go-sqlite3), sqlc, Goose, Cobra CLI, net/http, SSE
 > **Approach:** Pure Go — no CGo, no Python. All phases for semester 4 delivery. Local dev deployment.
@@ -8,13 +8,13 @@
 > **DB Design:** Adapted OpenCode SQLite model — 3 base tables extended for agents, memory, delegation
 > **Order:** Sequential phases. Each phase builds on the previous.
 
-## Overall Progress: ~45%
+## Overall Progress: ~49%
 
 ```
 Phase 0 (Bootstrap)    ██████████ 100%  (complete)
 Phase 1 (Config+DB)    ██████████ 100%  (complete)
 Phase 2 (LLM Client)   ██████████ 100%  (complete)
-Phase 3 (Agent Types)  ░░░░░░░░░░   0%
+Phase 3 (Agent Types)  ██████████ 100%  (complete)
 Phase 4 (History Tree) ░░░░░░░░░░   0%
 Phase 5 (Tools)        ░░░░░░░░░░   0%
 Phase 6 (Agent Engine) ░░░░░░░░░░   0%
@@ -171,24 +171,28 @@ Phase 10 (Docs)        ████░░░░░░  40%  (README, diagrams, M
 **Goal:** Define agent data types, parse `.md` config files with YAML frontmatter, build registry
 
 ### 3.1 Agent Types (`internal/agent/types.go`)
-- [ ] `Agent` struct: `Name`, `SystemPrompt`, `Tools []string`, `Model`, `ParentAgent`, `Permissions map[string]string`, `ConfigPath`
-- [ ] `Message` struct (in-memory): `Role`, `Content`, `ToolCalls`, `ToolCallID`
-- [ ] `ToolCall` struct: `ID`, `Name`, `Arguments`
-- [ ] `Response` struct: `Content`, `Sources`, `Usage`, `StopReason`
+- [x] `Agent` struct: `Name`, `SystemPrompt`, `Tools []string`, `Model`, `ParentAgent`, `Permissions map[string]string`, `ConfigPath`
+- [x] `Message` struct (in-memory): `Role`, `Content`, `ToolCalls`, `ToolCallID`, `Name`
+- [x] `ToolCall` struct: `ID`, `Name`, `Arguments`
+- [x] `Response` struct: `Content`, `Usage`, `StopReason`, `Error`
+- [x] Helper methods: `HasTool()`, `IsToolAllowed()` on `Agent`
 
 ### 3.2 Agent Loader (`internal/agent/loader.go`)
-- [ ] `LoadAgent(path string) (*Agent, error)` — read `.md` file, parse YAML frontmatter
-- [ ] YAML frontmatter fields: `name`, `model`, `tools`, `parent_agent`, `permissions`
-- [ ] Body of `.md` file = system prompt (if not in frontmatter `system_prompt` field)
-- [ ] Parse `permissions` as `map[string]string` (`tool_name → "allow"/"deny"`)
-- [ ] `LoadDirectory(dir string) (map[string]*Agent, error)` — scan all `.md` files
+- [x] `LoadAgent(path string) (*Agent, error)` — read `.md` file, parse YAML frontmatter
+- [x] YAML frontmatter fields: `name`, `model`, `tools`, `parent_agent`, `permissions`
+- [x] Body of `.md` file = system prompt (if not in frontmatter `system_prompt` field)
+- [x] Parse `permissions` as `map[string]string` (`tool_name → "allow"/"deny"`)
+- [x] `LoadDirectory(dir string) (map[string]*Agent, error)` — scan all `.md` files
 
 ### 3.3 Agent Registry (`internal/agent/registry.go`)
-- [ ] In-memory `Registry` with `map[string]*Agent`
-- [ ] `Register(agent *Agent)`
-- [ ] `Get(name string) (*Agent, error)`
-- [ ] `List() []Agent`
-- [ ] `InitializeFromDir(dir string) error` — convenience wrapper around Loader
+- [x] In-memory `Registry` with `map[string]*Agent`
+- [x] `Register(agent *Agent)`
+- [x] `Get(name string) (*Agent, error)`
+- [x] `List() []Agent`
+- [x] `Names() []string`
+- [x] `Has(name string) bool`
+- [x] `Size() int`
+- [x] `InitializeFromDir(dir string) (int, error)` — convenience wrapper around Loader
 
 ### 3.4 Default Agent Config
 - [ ] Create `agents/default.md`:
