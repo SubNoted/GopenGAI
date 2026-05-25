@@ -8,7 +8,7 @@
 > **DB Design:** Adapted OpenCode SQLite model — 3 base tables extended for agents, memory, delegation
 > **Order:** Sequential phases. Each phase builds on the previous.
 
-## Overall Progress: ~54%
+## Overall Progress: ~56%
 
 ```
 Phase 0 (Bootstrap)    ██████████ 100%  (complete)
@@ -16,12 +16,12 @@ Phase 1 (Config+DB)    ██████████ 100%  (complete)
 Phase 2 (LLM Client)   ██████████ 100%  (complete)
 Phase 3 (Agent Types)  ██████████ 100%  (complete)
 Phase 4 (History Tree) ██████████ 100%  (complete)
-Phase 5 (Tools)        ░░░░░░░░░░   0%
-Phase 6 (Agent Engine) ░░░░░░░░░░   0%
-Phase 7 (HTTP API)     ███░░░░░░░  25%  (sync session CRUD + linear chat built; no SSE/async/branches/agents/memory)
+Phase 5 (Tools)        ░░░░░░░░░░   0%  (stubs only — 1 line each)
+Phase 6 (Agent Engine) ░░░░░░░░░░   0%  (stub only — 1 line)
+Phase 7 (HTTP API)     ███████░░░  70%  (sync session CRUD + linear chat built; SSE/async/branches still stubs)
 Phase 8 (CLI)          ██░░░░░░░░  20%  (sync chat + session commands built; no SSE streaming/agents/memory/branches)
 Phase 9 (Testing)      ░░░░░░░░░░   0%
-Phase 10 (Docs)        ████░░░░░░  40%  (README, diagrams, Makefile done; no agent examples)
+Phase 10 (Docs)        █████░░░░░  50%  (README, diagrams, Makefile, ЧТО_НУЖНО_ЗНАТЬ done; no agent examples)
 ```
 
 ---

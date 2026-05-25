@@ -212,9 +212,7 @@ save key findings to memory, and provide a well-structured summary.
 ├── agents/                  # Agent .md configs
 │   ├── default.md
 │   └── examples/
-│       ├── researcher.md
-│       ├── analyst.md
-│       └── summarizer.md
+│       └── default.md
 ├── gopengai.json.example
 ├── .gitignore                  # Ignores .gopengai/, binary, etc.
 ├── sqlc.yaml                   # sqlc configuration (SQLite engine)
@@ -246,17 +244,17 @@ See `DOCS/diagrams/07-rest-api.md` for the complete endpoint reference.
 
 | Phase | What                            | Status   |
 |-------|---------------------------------|----------|
-| 0     | Project bootstrap               | Not started |
-| 1     | Config & database layer         | Not started |
-| 2     | LLM client layer                | Not started |
-| 3     | Agent types & loader            | Not started |
-| 4     | History tree (conversations)    | Not started |
-| 5     | Tool registry & implementations | Not started |
-| 6     | Agent engine (core loop)        | Not started |
-| 7     | HTTP API + SSE events           | Not started |
-| 8     | CLI client                      | Not started |
-| 9     | Testing & quality               | Not started |
-| 10    | Documentation & polish          | Not started |
+| 0     | Project bootstrap               | ✅ Done |
+| 1     | Config & database layer         | ✅ Done |
+| 2     | LLM client layer                | ✅ Done |
+| 3     | Agent types & loader            | ✅ Done |
+| 4     | History tree (conversations)    | ✅ Done |
+| 5     | Tool registry & implementations | 🟡 Stubs |
+| 6     | Agent engine (core loop)        | 🟡 Stub |
+| 7     | HTTP API + SSE events           | ✅ Sync MVP, ❌ Async/SSE |
+| 8     | CLI client                      | ✅ Sync mode, ❌ Streaming |
+| 9     | Testing & quality               | ❌ Not started |
+| 10    | Documentation & polish          | ⬜ Partial |
 
 See `TODO.md` for the detailed task breakdown.
 
