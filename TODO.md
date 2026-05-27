@@ -1,6 +1,6 @@
 # GoPengAI — Implementation TODO
 
-> **Last synced:** 2026-05-27 (Phase 5 complete; Phase 7 + 8 partial: sync session CRUD + CLI built; async/SSE still planned)
+> **Last synced:** 2026-05-27 (Phase 6 + 7 EventBus complete; Phase 7 + 8 partial: sync session CRUD + CLI built; bugs fixed: tree corruption, dbMessagesToLLM tool_calls, graceful shutdown, heartbeat TOCTOU)
 > **Based on:** 10 architecture diagrams (01-container through 10-gopengai-container)
 > **Tech Stack:** Go 1.21+, SQLite3 (ncruces/go-sqlite3), sqlc, Goose, Cobra CLI, net/http, SSE
 > **Approach:** Pure Go — no CGo, no Python. All phases for semester 4 delivery. Local dev deployment.
@@ -8,7 +8,7 @@
 > **DB Design:** Adapted OpenCode SQLite model — 3 base tables extended for agents, memory, delegation
 > **Order:** Sequential phases. Each phase builds on the previous.
 
-## Overall Progress: ~66%
+## Overall Progress: ~76%
 
 ```
 Phase 0 (Bootstrap)    ██████████ 100%  (complete)
@@ -17,8 +17,8 @@ Phase 2 (LLM Client)   ██████████ 100%  (complete)
 Phase 3 (Agent Types)  ██████████ 100%  (complete)
 Phase 4 (History Tree) ██████████ 100%  (complete)
 Phase 5 (Tools)        ██████████ 100%  (complete)
-Phase 6 (Agent Engine) ░░░░░░░░░░   0%  (stub only — 1 line)
-Phase 7 (HTTP API)     ███████░░░  70%  (sync session CRUD + linear chat built; SSE/async/branches still stubs)
+Phase 6 (Agent Engine) ██████████ 100%  (engine loop, EventBus, abort, tool execution, wiring)
+Phase 7 (HTTP API)     ████████░░  80%  (sync session CRUD + linear chat + EventBus + graceful shutdown built; SSE/async/branches still stubs)
 Phase 8 (CLI)          ██░░░░░░░░  20%  (sync chat + session commands built; no SSE streaming/agents/memory/branches)
 Phase 9 (Testing)      ░░░░░░░░░░   0%
 Phase 10 (Docs)        █████░░░░░  50%  (README, diagrams, Makefile, ЧТО_НУЖНО_ЗНАТЬ done; no agent examples)
@@ -195,7 +195,7 @@ Phase 10 (Docs)        █████░░░░░  50%  (README, diagrams, M
 - [x] `InitializeFromDir(dir string) (int, error)` — convenience wrapper around Loader
 
 ### 3.4 Default Agent Config
-- [ ] Create `agents/default.md`:
+- [x] Create `agents/default.md`:
   ```markdown
   ---
   name: default
@@ -300,8 +300,8 @@ Phase 10 (Docs)        █████░░░░░  50%  (README, diagrams, M
 **Goal:** Core agent loop with async processing, event publishing, and permission checking
 
 ### 6.1 Engine (`internal/agent/engine.go`)
-- [ ] `Engine` struct with dependencies: `llm.Client`, `ToolRegistry`, `history.Manager`, `agent.Registry`, `*sql.DB`, `*EventBus`
-- [ ] `Process(ctx, sessionID, message, agentName) error` (async — runs in goroutine):
+- [x] `Engine` struct with dependencies: `llm.Client`, `tool.Registry`, `HistoryRepository`, `agent.Registry`, `*sql.DB`, `db.Querier`, `*config.Config`, `EventBus`
+- [x] `Process(ctx, sessionID, message, agentName) error` (async — runs in goroutine):
   1. Set session status → "working", publish `session.status` event
   2. Ensure session exists (create if not)
   3. Load agent from registry
@@ -329,20 +329,20 @@ Phase 10 (Docs)        █████░░░░░  50%  (README, diagrams, M
   9. defer: set session status → "idle", publish `session.status` event
 
 ### 6.2 Message Persistence
-- [ ] On user message: `InsertMessage` with parent = current active_leaf
-- [ ] On assistant message: `InsertMessage` with parent = user message
-- [ ] On tool calls: `InsertMessage` (role=assistant, tool_calls) → parent = user message
-- [ ] On tool results: `InsertMessage` (role=tool, tool_call_id) → parent = assistant tool call
-- [ ] Update `active_leaf_id` on session after full assistant response
+- [x] On user message: `InsertMessage` with parent = current active_leaf
+- [x] On assistant message: `InsertMessage` with parent = user message
+- [x] On tool calls: `InsertMessage` (role=assistant, tool_calls) → parent = user message
+- [x] On tool results: `InsertMessage` (role=tool, tool_call_id) → parent = assistant tool call
+- [x] Update `active_leaf_id` on session after full assistant response
 
 ### 6.3 Token Counting & Usage Tracking
-- [ ] Track token_count per message (from LLM response `usage` field)
-- [ ] Aggregate in completion event
+- [x] Track token_count per message (from LLM response `usage` field)
+- [x] Aggregate in completion event
 
 ### 6.4 Abort Support
-- [ ] `Abort(sessionID string) error` — cancel context for running engine goroutine
-- [ ] Goroutine checks `ctx.Err()` at loop boundaries
-- [ ] Publish `message.error` with "aborted" status
+- [x] `Abort(sessionID string) error` — cancel context for running engine goroutine
+- [x] Goroutine checks `ctx.Err()` at loop boundaries
+- [x] Publish `message.error` with "aborted" status
 
 ---
 
@@ -351,20 +351,22 @@ Phase 10 (Docs)        █████░░░░░  50%  (README, diagrams, M
 **Goal:** REST API with async message handling, SSE event streaming, and OpenAI-compatible endpoints
 
 ### 7.1 Event Bus (`internal/api/events.go`)
-- [ ] `EventBus` struct with `sync.RWMutex`, `global []chan SSEEvent`, `sessions map[string][]chan SSEEvent`
-- [ ] `SSEEvent` struct: `Type string`, `Properties interface{}`
-- [ ] `Subscribe(sessionID string) <-chan SSEEvent` — register listener
-- [ ] `Unsubscribe(sessionID string, ch <-chan SSEEvent)` — remove listener
-- [ ] `PublishGlobal(event SSEEvent)` — send to all global listeners (non-blocking)
-- [ ] `PublishSession(sessionID string, event SSEEvent)` — send to session listeners (non-blocking)
-- [ ] Slow listener protection: drop events if channel buffer full
-- [ ] Heartbeat goroutine: publish `heartbeat` every 15s
+- [x] `EventBus` struct with `sync.RWMutex`, `global []chan SSEEvent`, `sessions map[string][]chan SSEEvent`
+- [x] `SSEEvent` struct: `Type string`, `Properties interface{}`
+- [x] `Subscribe(sessionID string) <-chan SSEEvent` — register listener
+- [x] `Unsubscribe(sessionID string, ch <-chan SSEEvent)` — remove listener
+- [x] `PublishGlobal(eventType, properties)` — send to all global listeners (non-blocking, implements `agent.EventBus`)
+- [x] `PublishSession(sessionID, eventType, properties)` — send to session listeners (non-blocking)
+- [x] Slow listener protection: drop events if channel buffer full
+- [x] Heartbeat goroutine: publish `heartbeat` every 15s
+- [x] `Close()` — clean shutdown via done channel (TOCTOU-safe)
 
 ### 7.2 SSE Writer (`internal/api/sse.go`)
 - [ ] `WriteSSE(w http.ResponseWriter, event SSEEvent)` — format as SSE text
 - [ ] Flush support via `http.Flusher`
 - [ ] `HandleGlobalSSE(w, r)` — handler for `GET /event`
 - [ ] `HandleSessionSSE(w, r)` — handler for `GET /session/:id/events`
+- [ ] SSE writer file created (stub)
 
 ### 7.3 Routes (`internal/api/routes.go`)
 - [x] `RegisterRoutes(mux, handler)` — wire `/health` and `/v1/chat/completions`
@@ -413,12 +415,12 @@ Phase 10 (Docs)        █████░░░░░  50%  (README, diagrams, M
 ### 7.6 Server Entrypoint (`cmd/api/main.go`)
 - [x] Load config from `gopengai.json` (hardcoded path + os.Args fallback)
 - [x] Open database + run migrations
-- [ ] Initialize agent registry from `agents/` directory
-- [ ] Initialize tool registry + register all tools
-- [ ] Create EventBus, Agent Engine
-- [x] Create API handler (with DB + Config wired directly) + register routes
+- [x] Initialize agent registry from `agents/` directory
+- [x] Initialize tool registry + register all tools
+- [x] Create EventBus, Agent Engine
+- [x] Create API handler (with DB + Config + Engine + EventBus wired) + register routes
 - [x] Start HTTP server on configured host:port
-- [ ] Graceful shutdown (SIGINT/SIGTERM) — drain SSE connections, wait for engine goroutines
+- [x] Graceful shutdown (SIGINT/SIGTERM) — drain SSE connections via EventBus.Close, wait for server, close DB
 
 ---
 
