@@ -1,6 +1,6 @@
 # GoPengAI — Implementation TODO
 
-> **Last synced:** 2026-05-23 (Phase 4 complete; Phase 7 + 8 partial: sync session CRUD + CLI built; async/SSE still planned)
+> **Last synced:** 2026-05-27 (Phase 5 complete; Phase 7 + 8 partial: sync session CRUD + CLI built; async/SSE still planned)
 > **Based on:** 10 architecture diagrams (01-container through 10-gopengai-container)
 > **Tech Stack:** Go 1.21+, SQLite3 (ncruces/go-sqlite3), sqlc, Goose, Cobra CLI, net/http, SSE
 > **Approach:** Pure Go — no CGo, no Python. All phases for semester 4 delivery. Local dev deployment.
@@ -8,7 +8,7 @@
 > **DB Design:** Adapted OpenCode SQLite model — 3 base tables extended for agents, memory, delegation
 > **Order:** Sequential phases. Each phase builds on the previous.
 
-## Overall Progress: ~56%
+## Overall Progress: ~66%
 
 ```
 Phase 0 (Bootstrap)    ██████████ 100%  (complete)
@@ -16,7 +16,7 @@ Phase 1 (Config+DB)    ██████████ 100%  (complete)
 Phase 2 (LLM Client)   ██████████ 100%  (complete)
 Phase 3 (Agent Types)  ██████████ 100%  (complete)
 Phase 4 (History Tree) ██████████ 100%  (complete)
-Phase 5 (Tools)        ░░░░░░░░░░   0%  (stubs only — 1 line each)
+Phase 5 (Tools)        ██████████ 100%  (complete)
 Phase 6 (Agent Engine) ░░░░░░░░░░   0%  (stub only — 1 line)
 Phase 7 (HTTP API)     ███████░░░  70%  (sync session CRUD + linear chat built; SSE/async/branches still stubs)
 Phase 8 (CLI)          ██░░░░░░░░  20%  (sync chat + session commands built; no SSE streaming/agents/memory/branches)
@@ -255,7 +255,7 @@ Phase 10 (Docs)        █████░░░░░  50%  (README, diagrams, M
 **Goal:** Tool interface, registry, 3 tool implementations, permission checking
 
 ### 5.1 Tool Interface (`internal/tools/registry.go`)
-- [ ] Define `Tool` interface:
+- [x] Define `Tool` interface:
   ```go
   type Tool interface {
       Name() string
@@ -264,34 +264,34 @@ Phase 10 (Docs)        █████░░░░░  50%  (README, diagrams, M
       Execute(ctx context.Context, args json.RawMessage) (string, error)
   }
   ```
-- [ ] `Registry` struct: `map[string]Tool`
-- [ ] `Register(tool Tool)`
-- [ ] `Get(name string) (Tool, error)`
-- [ ] `ToToolDefinitions() []llm.ToolDefinition` — convert to LLM API format
-- [ ] `IsAllowed(toolName string, permissions map[string]string) bool` — check allow/deny
+- [x] `Registry` struct: `map[string]Tool`
+- [x] `Register(tool Tool)`
+- [x] `Get(name string) (Tool, error)`
+- [x] `ToToolDefinitions() []llm.ToolDefinition` — convert to LLM API format
+- [x] `IsAllowed(toolName string, permissions map[string]string) bool` — check allow/deny
 
 ### 5.2 Web Fetch Tool (`internal/tools/web_fetch.go`)
-- [ ] `WebFetchTool` implementing `Tool` interface
-- [ ] `Parameters()`: `{ "type": "object", "properties": { "url": { "type": "string" } }, "required": ["url"] }`
-- [ ] `Execute`: HTTP GET URL, extract text content (strip HTML), return first N chars
-- [ ] User-Agent header, timeout (10s), max response size (50KB)
+- [x] `WebFetchTool` implementing `Tool` interface
+- [x] `Parameters()`: `{ "type": "object", "properties": { "url": { "type": "string" } }, "required": ["url"] }`
+- [x] `Execute`: HTTP GET URL, extract text content (strip HTML), return first N chars
+- [x] User-Agent header, timeout (10s), max response size (50KB)
 
 ### 5.3 Memory Tools (`internal/tools/memory.go`)
-- [ ] `MemorySave` tool:
+- [x] `MemorySave` tool:
   - Parameters: `{ "key": "string", "value": "string", "category": "string" }`
   - Execute: call `db.SaveMemory(agentName, key, value, category)`
-- [ ] `MemoryRecall` tool:
+- [x] `MemoryRecall` tool:
   - Parameters: `{ "key": "string" }` (empty = list all)
   - Execute: call `db.GetMemory` or `db.ListMemory`
-- [ ] Both scoped to current agent_name from context
+- [x] Both scoped to current agent_name from context
 
 ### 5.4 Delegate Tool (`internal/tools/delegate.go`)
-- [ ] `DelegateTool` implementing `Tool` interface
-- [ ] Parameters: `{ "agent_name": "string", "task": "string" }`
-- [ ] Execute: load sub-agent from registry, build new context, call engine recursively
-- [ ] Log delegation to `delegation_logs` table
-- [ ] Timeout protection (30s max for sub-agent)
-- [ ] Cycle detection (visited set of agent names in delegation chain)
+- [x] `DelegateTool` implementing `Tool` interface
+- [x] Parameters: `{ "agent_name": "string", "task": "string" }`
+- [x] Execute: load sub-agent from registry, build new context, call engine recursively
+- [x] Log delegation to `delegation_logs` table
+- [x] Timeout protection (30s max for sub-agent)
+- [x] Cycle detection (visited set of agent names in delegation chain)
 
 ---
 

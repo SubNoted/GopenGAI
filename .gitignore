@@ -17,3 +17,6 @@ vendor/
 
 # Per-project config (contains API keys)
 gopengai.json
+
+# agents
+/.opencode
