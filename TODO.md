@@ -1,6 +1,6 @@
 # GoPengAI — Implementation TODO
 
-> **Last synced:** 2026-05-27 (Phase 6 + 7 EventBus complete; Phase 7 + 8 partial: sync session CRUD + CLI built; bugs fixed: tree corruption, dbMessagesToLLM tool_calls, graceful shutdown, heartbeat TOCTOU)
+> **Last synced:** 2026-05-27 (Phase 6 + 7 EventBus complete; Phase 7 + 8 partial: sync session CRUD + CLI built; bug fixes: input validation, ToolCalls priority, stuck session defer, atomic DeleteSession tx, sanitized error leakage, Subscribe-after-Close, second-signal force-kill, tool 30s timeout)
 > **Based on:** 10 architecture diagrams (01-container through 10-gopengai-container)
 > **Tech Stack:** Go 1.21+, SQLite3 (ncruces/go-sqlite3), sqlc, Goose, Cobra CLI, net/http, SSE
 > **Approach:** Pure Go — no CGo, no Python. All phases for semester 4 delivery. Local dev deployment.

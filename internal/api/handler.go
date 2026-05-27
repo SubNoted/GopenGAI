@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"gopengai/internal/agent"
 	"gopengai/internal/config"
 	"gopengai/internal/db"
 	"gopengai/internal/llm"
@@ -18,10 +19,12 @@ import (
 
 // Handler holds the dependencies for HTTP request handlers.
 type Handler struct {
-	LLM    *llm.Client
-	DB     *db.Queries
-	SQLDB  *sql.DB
-	Config *config.Config
+	LLM      *llm.Client
+	DB       *db.Queries
+	SQLDB    *sql.DB
+	Config   *config.Config
+	Engine   *agent.Engine
+	EventBus *EventBus
 }
 
 // ---------------------------------------------------------------------------
@@ -194,13 +197,28 @@ func (h *Handler) HandleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete messages first (FK constraint).
-	if err := h.DB.DeleteSessionMessages(r.Context(), id); err != nil {
+	// Wrap delete in a transaction to ensure atomicity: if session deletion
+	// fails after message deletion, the transaction rolls back both.
+	tx, err := h.SQLDB.BeginTx(r.Context(), nil)
+	if err != nil {
+		h.internalError(w, fmt.Errorf("begin delete tx: %w", err))
+		return
+	}
+	defer tx.Rollback()
+
+	qtx := h.DB.WithTx(tx)
+
+	if err := qtx.DeleteSessionMessages(r.Context(), id); err != nil {
 		h.internalError(w, fmt.Errorf("delete messages: %w", err))
 		return
 	}
-	if err := h.DB.DeleteSession(r.Context(), id); err != nil {
+	if err := qtx.DeleteSession(r.Context(), id); err != nil {
 		h.internalError(w, fmt.Errorf("delete session: %w", err))
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		h.internalError(w, fmt.Errorf("commit delete tx: %w", err))
 		return
 	}
 
@@ -211,6 +229,9 @@ func (h *Handler) HandleDeleteSession(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 // Chat endpoint (history-aware)
 // ---------------------------------------------------------------------------
+
+// maxContentLength is the maximum allowed size for user message content.
+const maxContentLength = 100 * 1024 // 100 KB
 
 // HandleChatMessage handles POST /session/{id}/message.
 // It saves the user message, calls the LLM with full session context,
@@ -233,11 +254,15 @@ func (h *Handler) HandleChatMessage(w http.ResponseWriter, r *http.Request) {
 		Content string `json:"content"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 	if strings.TrimSpace(req.Content) == "" {
 		http.Error(w, "content is required", http.StatusBadRequest)
+		return
+	}
+	if len(req.Content) > maxContentLength {
+		http.Error(w, "content exceeds maximum size (100KB)", http.StatusRequestEntityTooLarge)
 		return
 	}
 
@@ -278,7 +303,6 @@ func (h *Handler) HandleChatMessage(w http.ResponseWriter, r *http.Request) {
 		SessionID: sessionID,
 		ParentID:  parentID,
 		Role:      "user",
-		Parts:     "[]",
 		Content:   sql.NullString{String: req.Content, Valid: true},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -307,6 +331,23 @@ func (h *Handler) HandleChatMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	// --- End transaction ---
 
+	// If any error occurs after this point, ensure session status is reset to
+	// "idle" so it doesn't remain permanently stuck in "working".
+	var statusReset bool
+	defer func() {
+		if !statusReset {
+			resetCtx, resetCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer resetCancel()
+			_, _ = h.DB.UpdateSession(resetCtx, db.UpdateSessionParams{
+				ID:           sessionID,
+				Title:        session.Title,
+				AgentName:    session.AgentName,
+				ActiveLeafID: sql.NullString{String: userMsgID, Valid: true},
+				Status:       "idle",
+			})
+		}
+	}()
+
 	// Build context: load full message history for this session.
 	// Safe to use h.DB here (no transaction needed for reads after commit).
 	allMessages, err := h.DB.ListMessagesBySession(ctx, sessionID)
@@ -320,6 +361,11 @@ func (h *Handler) HandleChatMessage(w http.ResponseWriter, r *http.Request) {
 
 	// Determine model: session agent_name-based lookup, fallback to config.
 	model := h.Config.LLM.Model
+	if session.AgentName != "" && h.Engine != nil {
+		if a, err := h.Engine.Agents.Get(session.AgentName); err == nil && a.Model != "" {
+			model = a.Model
+		}
+	}
 
 	// Call LLM (outside transaction — may be slow).
 	resp, err := h.LLM.ChatCompletion(ctx, &llm.ChatCompletionRequest{
@@ -328,14 +374,27 @@ func (h *Handler) HandleChatMessage(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		h.saveLLMErrorAndRespond(ctx, w, sessionID, userMsgID, session, model, now, err)
+		statusReset = true // saveLLMErrorAndRespond already resets status
 		return
 	}
 
-	// Extract assistant content.
-	var assistantContent string
-	if len(resp.Choices) > 0 {
-		assistantContent = resp.Choices[0].Message.Content
+	if len(resp.Choices) == 0 {
+		h.saveLLMErrorAndRespond(ctx, w, sessionID, userMsgID, session, model, now, fmt.Errorf("LLM returned no choices"))
+		statusReset = true
+		return
 	}
+
+	choice := resp.Choices[0]
+
+	// Check for tool_calls finish_reason — the sync handler cannot execute tools,
+	// so surface it as an error rather than silently dropping.
+	if choice.FinishReason == "tool_calls" || len(choice.Message.ToolCalls) > 0 {
+		h.saveLLMErrorAndRespond(ctx, w, sessionID, userMsgID, session, model, now, fmt.Errorf("LLM returned tool_calls but this endpoint does not execute tools; use the engine-based async path"))
+		statusReset = true
+		return
+	}
+
+	assistantContent := choice.Message.Content
 
 	// Save assistant message and update session in a new transaction.
 	assistantMsgID, err := h.saveAssistantMessage(ctx, sessionID, userMsgID, session, model, now, assistantContent, resp.Usage.TotalTokens)
@@ -344,6 +403,7 @@ func (h *Handler) HandleChatMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	statusReset = true
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ChatResponse{
 		SessionID: sessionID,
@@ -372,10 +432,9 @@ func (h *Handler) saveAssistantMessage(ctx context.Context, sessionID, userMsgID
 		SessionID:  sessionID,
 		ParentID:   sql.NullString{String: userMsgID, Valid: true},
 		Role:       "assistant",
-		Parts:      "[]",
 		Content:    sql.NullString{String: content, Valid: true},
 		Model:      sql.NullString{String: model, Valid: true},
-		TokenCount: sql.NullInt64{Int64: int64(tokenCount), Valid: true},
+		TokenCount: sql.NullInt64{Int64: int64(tokenCount), Valid: tokenCount > 0},
 		CreatedAt:  now + 1,
 		UpdatedAt:  now + 1,
 	})
@@ -397,9 +456,10 @@ func (h *Handler) saveAssistantMessage(ctx context.Context, sessionID, userMsgID
 }
 
 // saveLLMErrorAndRespond saves an error message to the session and returns a 502 to the client.
+// Error details are logged server-side only; the client receives a sanitized message.
 func (h *Handler) saveLLMErrorAndRespond(ctx context.Context, w http.ResponseWriter, sessionID, userMsgID string, session db.Session, model string, now int64, llmErr error) {
 	assistantMsgID := newID()
-	errContent := "LLM error: " + llmErr.Error()
+	log.Printf("LLM error for session %s: %v", sessionID, llmErr)
 
 	// Attempt to save error message in the background — best effort.
 	if err := func() error {
@@ -415,8 +475,7 @@ func (h *Handler) saveLLMErrorAndRespond(ctx context.Context, w http.ResponseWri
 			SessionID: sessionID,
 			ParentID:  sql.NullString{String: userMsgID, Valid: true},
 			Role:      "assistant",
-			Parts:     "[]",
-			Content:   sql.NullString{String: errContent, Valid: true},
+			Content:   sql.NullString{String: "LLM request failed", Valid: true},
 			CreatedAt: now + 1,
 			UpdatedAt: now + 1,
 		}); err != nil {
@@ -442,8 +501,8 @@ func (h *Handler) saveLLMErrorAndRespond(ctx context.Context, w http.ResponseWri
 		SessionID: sessionID,
 		MessageID: assistantMsgID,
 		Role:      "assistant",
-		Content:   errContent,
-		Error:     llmErr.Error(),
+		Content:   "LLM request failed",
+		Error:     "LLM request failed",
 	})
 }
 
@@ -465,13 +524,14 @@ func (h *Handler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 // forwards to LLM client, returns response. No history persistence.
 func (h *Handler) HandleChatCompletion(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	var req ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 
@@ -489,7 +549,8 @@ func (h *Handler) HandleChatCompletion(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.LLM.ChatCompletion(r.Context(), llmReq)
 	if err != nil {
-		http.Error(w, "llm error: "+err.Error(), http.StatusBadGateway)
+		log.Printf("LLM error in HandleChatCompletion: %v", err)
+		http.Error(w, "llm error", http.StatusBadGateway)
 		return
 	}
 
@@ -539,22 +600,54 @@ func toMessageViews(msgs []db.Message) []MessageView {
 }
 
 // dbMessagesToLLM converts a slice of DB messages to LLM API messages.
-// Only user and assistant messages are included; tool messages are skipped
-// for the linear history demo.
+// Includes user, assistant (with tool_calls from ToolArgs), and tool messages.
 func dbMessagesToLLM(msgs []db.Message) []llm.Message {
 	out := make([]llm.Message, 0, len(msgs))
 	for _, m := range msgs {
-		if m.Role != "user" && m.Role != "assistant" {
-			continue
+		switch m.Role {
+		case "user":
+			var content string
+			if m.Content.Valid {
+				content = m.Content.String
+			}
+			out = append(out, llm.Message{
+				Role:    m.Role,
+				Content: content,
+			})
+		case "assistant":
+			var content string
+			if m.Content.Valid {
+				content = m.Content.String
+			}
+			msg := llm.Message{
+				Role:    m.Role,
+				Content: content,
+			}
+			// Unmarshal tool_calls if present in ToolArgs.
+			if m.ToolArgs.Valid && m.ToolArgs.String != "" {
+				var toolCalls []llm.ToolCall
+				if err := json.Unmarshal([]byte(m.ToolArgs.String), &toolCalls); err == nil {
+					msg.ToolCalls = toolCalls
+				}
+			}
+			out = append(out, msg)
+		case "tool":
+			var content string
+			if m.Content.Valid {
+				content = m.Content.String
+			}
+			msg := llm.Message{
+				Role:    m.Role,
+				Content: content,
+			}
+			if m.ToolCallID.Valid {
+				msg.ToolCallID = m.ToolCallID.String
+			}
+			if m.ToolName.Valid {
+				msg.Name = m.ToolName.String
+			}
+			out = append(out, msg)
 		}
-		var content string
-		if m.Content.Valid {
-			content = m.Content.String
-		}
-		out = append(out, llm.Message{
-			Role:    m.Role,
-			Content: content,
-		})
 	}
 	return out
 }

@@ -3,6 +3,7 @@
 /api
 /cli
 *.exe
+.~lock.*
 
 # Data directory (per-project SQLite)
 .gopengai/
