@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -56,7 +57,6 @@ type Engine struct {
 	Tools    *tools.Registry
 	History  HistoryRepository
 	Agents   *Registry
-	SQLDB    *sql.DB
 	Querier  db.Querier
 	Config   *config.Config
 	EventBus EventBus
@@ -72,7 +72,6 @@ func NewEngine(
 	toolReg *tools.Registry,
 	histRepo HistoryRepository,
 	agentReg *Registry,
-	sqldb *sql.DB,
 	querier db.Querier,
 	cfg *config.Config,
 	eventBus EventBus,
@@ -82,7 +81,6 @@ func NewEngine(
 		Tools:      toolReg,
 		History:    histRepo,
 		Agents:     agentReg,
-		SQLDB:      sqldb,
 		Querier:    querier,
 		Config:     cfg,
 		EventBus:   eventBus,
@@ -281,6 +279,9 @@ func (e *Engine) Process(ctx context.Context, sessionID, userContent, agentName 
 			// Update active leaf BEFORE publishing completion — if the DB write
 			// fails, the UI should not see a success event.
 			if err := e.History.UpdateActiveLeaf(ctx, sessionID, assistantMsg.ID); err != nil {
+				e.publishSessionEvent(sessionID, "message.error", map[string]string{
+					"error": fmt.Sprintf("save active leaf: %v", err),
+				})
 				return fmt.Errorf("engine: update active leaf: %w", err)
 			}
 
@@ -410,10 +411,12 @@ func (e *Engine) Process(ctx context.Context, sessionID, userContent, agentName 
 				// Apply a 30-second timeout for tool execution to prevent
 				// hanging the engine loop on slow tool calls (e.g., network fetches).
 				toolCtx, toolCancel := context.WithTimeout(toolCtx, 30*time.Second)
-				defer toolCancel()
 
 				// Execute the tool.
 				toolResult, toolErr := tool.Execute(toolCtx, json.RawMessage(tc.Function.Arguments))
+				// Cancel the tool timeout immediately — prevents context
+				// accumulation from N tool calls inside the for loop.
+				toolCancel()
 				if toolErr != nil {
 					toolResult = fmt.Sprintf("Tool %q error: %v", toolName, toolErr)
 					e.publishSessionEvent(sessionID, "message.tool.error", map[string]interface{}{
@@ -531,7 +534,7 @@ func (e *Engine) saveToolResult(ctx context.Context, sessionID, parentMsgID, too
 	})
 	if err != nil {
 		// Non-fatal: log but don't abort the engine loop.
-		fmt.Printf("engine: failed to save tool result for %q (call %s): %v\n", toolName, toolCallID, err)
+		log.Printf("engine: failed to save tool result for %q (call %s): %v", toolName, toolCallID, err)
 	}
 }
 

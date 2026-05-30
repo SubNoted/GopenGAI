@@ -8,12 +8,15 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"gopengai/internal/agent"
 	"gopengai/internal/config"
 	"gopengai/internal/db"
+	"gopengai/internal/history"
 	"gopengai/internal/llm"
 )
 
@@ -25,6 +28,12 @@ type Handler struct {
 	Config   *config.Config
 	Engine   *agent.Engine
 	EventBus *EventBus
+	History  *history.Repository
+
+	// Wg tracks active async engine goroutines. Callers should Wg.Add(1)
+	// before spawning a goroutine and Wg.Done() when it completes. Used for
+	// graceful shutdown: main waits on Wg before closing the database.
+	Wg *sync.WaitGroup
 }
 
 // ---------------------------------------------------------------------------
@@ -75,17 +84,6 @@ type CreateSessionRequest struct {
 	AgentName string `json:"agent_name,omitempty"`
 }
 
-// ChatResponse is the JSON body returned from POST /session/{id}/message.
-type ChatResponse struct {
-	SessionID string     `json:"session_id"`
-	MessageID string     `json:"message_id"`
-	Role      string     `json:"role"`
-	Content   string     `json:"content"`
-	Model     string     `json:"model"`
-	Usage     *llm.Usage `json:"usage,omitempty"`
-	Error     string     `json:"error,omitempty"`
-}
-
 // SessionView is a JSON-friendly session representation for API responses.
 type SessionView struct {
 	ID           string        `json:"id"`
@@ -114,8 +112,9 @@ type MessageView struct {
 // HandleCreateSession handles POST /session.
 func (h *Handler) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var req CreateSessionRequest
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 	if req.AgentName == "" {
@@ -141,7 +140,7 @@ func (h *Handler) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(toSessionView(session, nil))
+	encodeJSON(w, toSessionView(session, nil))
 }
 
 // HandleListSessions handles GET /session.
@@ -158,7 +157,7 @@ func (h *Handler) HandleListSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(views)
+	encodeJSON(w, views)
 }
 
 // HandleGetSession handles GET /session/{id}.
@@ -186,7 +185,7 @@ func (h *Handler) HandleGetSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(toSessionView(session, toMessageViews(messages)))
+	encodeJSON(w, toSessionView(session, toMessageViews(messages)))
 }
 
 // HandleDeleteSession handles DELETE /session/{id}.
@@ -223,25 +222,31 @@ func (h *Handler) HandleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+	encodeJSON(w, map[string]string{"status": "deleted"})
 }
 
 // ---------------------------------------------------------------------------
-// Chat endpoint (history-aware)
+// Chat endpoint (async, delegated to agent engine)
 // ---------------------------------------------------------------------------
 
 // maxContentLength is the maximum allowed size for user message content.
 const maxContentLength = 100 * 1024 // 100 KB
 
+// maxRequestBodySize is the maximum accepted HTTP request body size (1 MB).
+// Applied via http.MaxBytesReader to all endpoints that decode JSON bodies.
+const maxRequestBodySize = 1 << 20 // 1 MB
+
 // HandleChatMessage handles POST /session/{id}/message.
-// It saves the user message, calls the LLM with full session context,
-// saves the assistant response, and returns it.
 //
-// The initial DB operations (read session + write user message + update status)
-// are wrapped in a transaction to prevent race conditions where concurrent
-// requests to the same session could create sibling messages off the same parent.
-// The LLM call happens outside the transaction to avoid holding a DB lock
-// during a potentially slow HTTP request.
+// This endpoint is async: it validates the request, updates the session status
+// to "working", returns 202 Accepted immediately, and spawns a goroutine that
+// delegates to engine.Process(). The engine handles saving the user message,
+// building LLM context, calling the LLM with the tool-calling loop, saving
+// responses, publishing SSE events, and resetting the DB status to "idle".
+//
+// Clients should subscribe to GET /session/{id}/events (SSE) to receive
+// real-time progress events (message.part.added, message.complete,
+// message.error, session.status, etc.).
 func (h *Handler) HandleChatMessage(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("id")
 	if sessionID == "" {
@@ -253,6 +258,7 @@ func (h *Handler) HandleChatMessage(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Content string `json:"content"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
@@ -267,20 +273,9 @@ func (h *Handler) HandleChatMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	now := time.Now().UnixMilli()
 
-	// --- Transaction: read session + save user message + update status ---
-	tx, err := h.SQLDB.BeginTx(ctx, nil)
-	if err != nil {
-		h.internalError(w, fmt.Errorf("begin tx: %w", err))
-		return
-	}
-	defer tx.Rollback() // no-op if committed
-
-	qtx := h.DB.WithTx(tx)
-
-	// Load the session within the transaction.
-	session, err := qtx.GetSessionByID(ctx, sessionID)
+	// Read session to get agent_name and validate existence.
+	session, err := h.DB.GetSessionByID(ctx, sessionID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			http.Error(w, "session not found", http.StatusNotFound)
@@ -290,220 +285,77 @@ func (h *Handler) HandleChatMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine parent_id: use active_leaf_id if set.
-	var parentID sql.NullString
-	if session.ActiveLeafID.Valid {
-		parentID = session.ActiveLeafID
+	agentName := session.AgentName
+	if agentName == "" {
+		agentName = h.Config.DefaultAgent
 	}
 
-	// Save user message.
-	userMsgID := newID()
-	_, err = qtx.CreateMessage(ctx, db.CreateMessageParams{
-		ID:        userMsgID,
-		SessionID: sessionID,
-		ParentID:  parentID,
-		Role:      "user",
-		Content:   sql.NullString{String: req.Content, Valid: true},
-		CreatedAt: now,
-		UpdatedAt: now,
-	})
+	// Atomically try to claim the session (idle → working). Two concurrent
+	// requests for the same session cannot both pass this check — the DB-level
+	// WHERE status='idle' clause guarantees mutual exclusion.
+	sqlResult, err := h.SQLDB.ExecContext(ctx,
+		"UPDATE sessions SET status = 'working' WHERE id = ? AND status = 'idle'", sessionID)
 	if err != nil {
-		h.internalError(w, fmt.Errorf("save user message: %w", err))
+		h.internalError(w, fmt.Errorf("claim session: %w", err))
+		return
+	}
+	rows, _ := sqlResult.RowsAffected()
+	if rows == 0 {
+		http.Error(w, "session is already processing a message", http.StatusConflict)
 		return
 	}
 
-	// Set session to working and update active_leaf to user message.
-	if _, err := qtx.UpdateSession(ctx, db.UpdateSessionParams{
-		ID:           sessionID,
-		Title:        session.Title,
-		AgentName:    session.AgentName,
-		ActiveLeafID: sql.NullString{String: userMsgID, Valid: true},
-		Status:       "working",
-	}); err != nil {
-		h.internalError(w, fmt.Errorf("update session status: %w", err))
-		return
-	}
+	// Return 202 Accepted immediately — the client must use SSE to
+	// receive the actual response.
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	encodeJSON(w, map[string]string{
+		"session_id": sessionID,
+		"status":     "accepted",
+	})
 
-	// Commit the transaction.
-	if err := tx.Commit(); err != nil {
-		h.internalError(w, fmt.Errorf("commit tx: %w", err))
-		return
-	}
-	// --- End transaction ---
+	// Spawn goroutine for async processing with panic recovery, timeout,
+	// and WaitGroup tracking for graceful shutdown.
+	h.Wg.Add(1)
+	go func() {
+		defer h.Wg.Done()
 
-	// If any error occurs after this point, ensure session status is reset to
-	// "idle" so it doesn't remain permanently stuck in "working".
-	var statusReset bool
-	defer func() {
-		if !statusReset {
+		// Panic recovery: if the engine or DB code panics, catch it,
+		// log the stack trace, and reset session status to "idle" so
+		// the session is not permanently stuck in "working".
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("PANIC in chat goroutine session %s: %v\n%s",
+					sessionID, rec, debug.Stack())
+			}
+			// Always reset the DB status to "idle", regardless of panic
+			// or normal completion. Use a fresh context with timeout so
+			// we can still update even if the engine context is cancelled.
 			resetCtx, resetCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer resetCancel()
-			_, _ = h.DB.UpdateSession(resetCtx, db.UpdateSessionParams{
-				ID:           sessionID,
-				Title:        session.Title,
-				AgentName:    session.AgentName,
-				ActiveLeafID: sql.NullString{String: userMsgID, Valid: true},
-				Status:       "idle",
-			})
+			// Re-read session so we don't overwrite fields (active_leaf)
+			// that the engine may have updated.
+			if s, serr := h.DB.GetSessionByID(resetCtx, sessionID); serr == nil {
+				_, _ = h.DB.UpdateSession(resetCtx, db.UpdateSessionParams{
+					ID:           sessionID,
+					Title:        s.Title,
+					AgentName:    s.AgentName,
+					ActiveLeafID: s.ActiveLeafID,
+					Status:       "idle",
+				})
+			} else {
+				log.Printf("failed to load session %s for status reset: %v", sessionID, serr)
+			}
+		}()
+
+		// Apply a 5-minute timeout to prevent permanently hanging
+		// goroutines (e.g., LLM TCP timeout, stuck tool fetch).
+		bgCtx, bgCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer bgCancel()
+		if err := h.Engine.Process(bgCtx, sessionID, req.Content, agentName); err != nil {
+			log.Printf("engine process error for session %s: %v", sessionID, err)
 		}
 	}()
-
-	// Build context: load full message history for this session.
-	// Safe to use h.DB here (no transaction needed for reads after commit).
-	allMessages, err := h.DB.ListMessagesBySession(ctx, sessionID)
-	if err != nil {
-		h.internalError(w, fmt.Errorf("load history: %w", err))
-		return
-	}
-
-	// Convert DB messages to LLM messages.
-	llmMessages := dbMessagesToLLM(allMessages)
-
-	// Determine model: session agent_name-based lookup, fallback to config.
-	model := h.Config.LLM.Model
-	if session.AgentName != "" && h.Engine != nil {
-		if a, err := h.Engine.Agents.Get(session.AgentName); err == nil && a.Model != "" {
-			model = a.Model
-		}
-	}
-
-	// Call LLM (outside transaction — may be slow).
-	resp, err := h.LLM.ChatCompletion(ctx, &llm.ChatCompletionRequest{
-		Model:    model,
-		Messages: llmMessages,
-	})
-	if err != nil {
-		h.saveLLMErrorAndRespond(ctx, w, sessionID, userMsgID, session, model, now, err)
-		statusReset = true // saveLLMErrorAndRespond already resets status
-		return
-	}
-
-	if len(resp.Choices) == 0 {
-		h.saveLLMErrorAndRespond(ctx, w, sessionID, userMsgID, session, model, now, fmt.Errorf("LLM returned no choices"))
-		statusReset = true
-		return
-	}
-
-	choice := resp.Choices[0]
-
-	// Check for tool_calls finish_reason — the sync handler cannot execute tools,
-	// so surface it as an error rather than silently dropping.
-	if choice.FinishReason == "tool_calls" || len(choice.Message.ToolCalls) > 0 {
-		h.saveLLMErrorAndRespond(ctx, w, sessionID, userMsgID, session, model, now, fmt.Errorf("LLM returned tool_calls but this endpoint does not execute tools; use the engine-based async path"))
-		statusReset = true
-		return
-	}
-
-	assistantContent := choice.Message.Content
-
-	// Save assistant message and update session in a new transaction.
-	assistantMsgID, err := h.saveAssistantMessage(ctx, sessionID, userMsgID, session, model, now, assistantContent, resp.Usage.TotalTokens)
-	if err != nil {
-		h.internalError(w, fmt.Errorf("save assistant response: %w", err))
-		return
-	}
-
-	statusReset = true
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(ChatResponse{
-		SessionID: sessionID,
-		MessageID: assistantMsgID,
-		Role:      "assistant",
-		Content:   assistantContent,
-		Model:     model,
-		Usage:     &resp.Usage,
-	})
-}
-
-// saveAssistantMessage creates the assistant message and updates session status in a transaction.
-// Returns the new message ID.
-func (h *Handler) saveAssistantMessage(ctx context.Context, sessionID, userMsgID string, session db.Session, model string, now int64, content string, tokenCount int) (string, error) {
-	tx, err := h.SQLDB.BeginTx(ctx, nil)
-	if err != nil {
-		return "", fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	qtx := h.DB.WithTx(tx)
-
-	assistantMsgID := newID()
-	_, err = qtx.CreateMessage(ctx, db.CreateMessageParams{
-		ID:         assistantMsgID,
-		SessionID:  sessionID,
-		ParentID:   sql.NullString{String: userMsgID, Valid: true},
-		Role:       "assistant",
-		Content:    sql.NullString{String: content, Valid: true},
-		Model:      sql.NullString{String: model, Valid: true},
-		TokenCount: sql.NullInt64{Int64: int64(tokenCount), Valid: tokenCount > 0},
-		CreatedAt:  now + 1,
-		UpdatedAt:  now + 1,
-	})
-	if err != nil {
-		return "", fmt.Errorf("create assistant message: %w", err)
-	}
-
-	if _, err := qtx.UpdateSession(ctx, db.UpdateSessionParams{
-		ID:           sessionID,
-		Title:        session.Title,
-		AgentName:    session.AgentName,
-		ActiveLeafID: sql.NullString{String: assistantMsgID, Valid: true},
-		Status:       "idle",
-	}); err != nil {
-		return "", fmt.Errorf("update session after chat: %w", err)
-	}
-
-	return assistantMsgID, tx.Commit()
-}
-
-// saveLLMErrorAndRespond saves an error message to the session and returns a 502 to the client.
-// Error details are logged server-side only; the client receives a sanitized message.
-func (h *Handler) saveLLMErrorAndRespond(ctx context.Context, w http.ResponseWriter, sessionID, userMsgID string, session db.Session, model string, now int64, llmErr error) {
-	assistantMsgID := newID()
-	log.Printf("LLM error for session %s: %v", sessionID, llmErr)
-
-	// Attempt to save error message in the background — best effort.
-	if err := func() error {
-		tx, err := h.SQLDB.BeginTx(ctx, nil)
-		if err != nil {
-			return fmt.Errorf("begin tx: %w", err)
-		}
-		defer tx.Rollback()
-
-		qtx := h.DB.WithTx(tx)
-		if _, err := qtx.CreateMessage(ctx, db.CreateMessageParams{
-			ID:        assistantMsgID,
-			SessionID: sessionID,
-			ParentID:  sql.NullString{String: userMsgID, Valid: true},
-			Role:      "assistant",
-			Content:   sql.NullString{String: "LLM request failed", Valid: true},
-			CreatedAt: now + 1,
-			UpdatedAt: now + 1,
-		}); err != nil {
-			return fmt.Errorf("create error message: %w", err)
-		}
-		if _, err := qtx.UpdateSession(ctx, db.UpdateSessionParams{
-			ID:           sessionID,
-			Title:        session.Title,
-			AgentName:    session.AgentName,
-			ActiveLeafID: sql.NullString{String: assistantMsgID, Valid: true},
-			Status:       "idle",
-		}); err != nil {
-			return fmt.Errorf("update session after error: %w", err)
-		}
-		return tx.Commit()
-	}(); err != nil {
-		log.Printf("failed to save LLM error to session %s: %v", sessionID, err)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusBadGateway)
-	json.NewEncoder(w).Encode(ChatResponse{
-		SessionID: sessionID,
-		MessageID: assistantMsgID,
-		Role:      "assistant",
-		Content:   "LLM request failed",
-		Error:     "LLM request failed",
-	})
 }
 
 // ---------------------------------------------------------------------------
@@ -513,7 +365,7 @@ func (h *Handler) saveLLMErrorAndRespond(ctx context.Context, w http.ResponseWri
 // HandleHealth responds with a simple health check.
 func (h *Handler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	encodeJSON(w, map[string]string{"status": "ok"})
 }
 
 // ---------------------------------------------------------------------------
@@ -530,6 +382,7 @@ func (h *Handler) HandleChatCompletion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req ChatRequest
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
@@ -555,7 +408,474 @@ func (h *Handler) HandleChatCompletion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	encodeJSON(w, resp)
+}
+
+// ---------------------------------------------------------------------------
+// Session update
+// ---------------------------------------------------------------------------
+
+// HandleUpdateSession handles PATCH /session/{id}.
+// Allows updating the session title.
+func (h *Handler) HandleUpdateSession(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "missing session id", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		Title string `json:"title,omitempty"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Title == "" {
+		http.Error(w, "title is required", http.StatusBadRequest)
+		return
+	}
+
+	session, err := h.DB.GetSessionByID(r.Context(), id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		h.internalError(w, fmt.Errorf("get session: %w", err))
+		return
+	}
+
+	updated, err := h.DB.UpdateSession(r.Context(), db.UpdateSessionParams{
+		ID:           id,
+		Title:        req.Title,
+		AgentName:    session.AgentName,
+		ActiveLeafID: session.ActiveLeafID,
+		Status:       session.Status,
+	})
+	if err != nil {
+		h.internalError(w, fmt.Errorf("update session: %w", err))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	encodeJSON(w, toSessionView(updated, nil))
+}
+
+// ---------------------------------------------------------------------------
+// Active branch messages
+// ---------------------------------------------------------------------------
+
+// HandleGetSessionMessages handles GET /session/{id}/messages.
+// Returns the active branch messages (root-to-leaf path using recursive CTE).
+func (h *Handler) HandleGetSessionMessages(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "missing session id", http.StatusBadRequest)
+		return
+	}
+
+	messages, err := h.History.GetActiveBranch(r.Context(), id)
+	if err != nil {
+		h.internalError(w, fmt.Errorf("get active branch: %w", err))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	encodeJSON(w, toMessageViews(messages))
+}
+
+// ---------------------------------------------------------------------------
+// Branches (leaves listing)
+// ---------------------------------------------------------------------------
+
+// HandleListBranches handles GET /session/{id}/branches.
+// Returns all leaf messages in the session (each leaf = one branch tip).
+func (h *Handler) HandleListBranches(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "missing session id", http.StatusBadRequest)
+		return
+	}
+
+	leaves, err := h.History.GetAllLeaves(r.Context(), id)
+	if err != nil {
+		h.internalError(w, fmt.Errorf("list branches: %w", err))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	encodeJSON(w, toMessageViews(leaves))
+}
+
+// ---------------------------------------------------------------------------
+// Fork session
+// ---------------------------------------------------------------------------
+
+// ForkRequest is the request body for POST /session/{id}/fork.
+type ForkRequest struct {
+	MessageID string `json:"message_id"`
+	Content   string `json:"content"`
+	Title     string `json:"title,omitempty"`
+	AgentName string `json:"agent_name,omitempty"`
+}
+
+// HandleForkSession handles POST /session/{id}/fork.
+// Forks the session at the given message and creates a new session.
+func (h *Handler) HandleForkSession(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("id")
+	if sessionID == "" {
+		http.Error(w, "missing session id", http.StatusBadRequest)
+		return
+	}
+
+	var req ForkRequest
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.MessageID == "" {
+		http.Error(w, "message_id is required", http.StatusBadRequest)
+		return
+	}
+	if req.Content == "" {
+		http.Error(w, "content is required", http.StatusBadRequest)
+		return
+	}
+
+	newSessionID, err := h.History.ForkSession(r.Context(), history.ForkSessionParams{
+		OriginalSessionID: sessionID,
+		AgentName:         req.AgentName,
+		Title:             req.Title,
+		FromMessageID:     req.MessageID,
+		NewContent:        req.Content,
+	})
+	if err != nil {
+		h.internalError(w, fmt.Errorf("fork session: %w", err))
+		return
+	}
+
+	newSession, err := h.DB.GetSessionByID(r.Context(), newSessionID)
+	if err != nil {
+		h.internalError(w, fmt.Errorf("get forked session: %w", err))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	encodeJSON(w, toSessionView(newSession, nil))
+}
+
+// ---------------------------------------------------------------------------
+// Select branch
+// ---------------------------------------------------------------------------
+
+// SelectBranchRequest is the request body for PUT /session/{id}/branch.
+type SelectBranchRequest struct {
+	LeafID string `json:"leaf_id"`
+}
+
+// HandleSelectBranch handles PUT /session/{id}/branch.
+// Sets the active branch by selecting a leaf node.
+func (h *Handler) HandleSelectBranch(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("id")
+	if sessionID == "" {
+		http.Error(w, "missing session id", http.StatusBadRequest)
+		return
+	}
+
+	var req SelectBranchRequest
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.LeafID == "" {
+		http.Error(w, "leaf_id is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.History.SelectLeaf(r.Context(), sessionID, req.LeafID); err != nil {
+		http.Error(w, "invalid branch selection", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	encodeJSON(w, map[string]string{"status": "ok"})
+}
+
+// ---------------------------------------------------------------------------
+// Edit message (branch creation)
+// ---------------------------------------------------------------------------
+
+// EditMessageRequest is the request body for PATCH /messages/{id}.
+type EditMessageRequest struct {
+	SessionID string `json:"session_id"`
+	Content   string `json:"content"`
+	Role      string `json:"role"`
+}
+
+// HandleEditMessage handles PATCH /messages/{id}.
+// Creates a new branch by editing a message (new sibling with same parent).
+func (h *Handler) HandleEditMessage(w http.ResponseWriter, r *http.Request) {
+	msgID := r.PathValue("id")
+	if msgID == "" {
+		http.Error(w, "missing message id", http.StatusBadRequest)
+		return
+	}
+
+	var req EditMessageRequest
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.SessionID == "" {
+		http.Error(w, "session_id is required", http.StatusBadRequest)
+		return
+	}
+	if req.Content == "" {
+		http.Error(w, "content is required", http.StatusBadRequest)
+		return
+	}
+	if req.Role == "" {
+		req.Role = "user"
+	}
+
+	newMsgID, err := h.History.EditMessage(r.Context(), history.EditMessageParams{
+		SessionID: req.SessionID,
+		TargetID:  msgID,
+		Content:   req.Content,
+		Role:      req.Role,
+	})
+	if err != nil {
+		http.Error(w, "edit failed", http.StatusBadRequest)
+		return
+	}
+
+	newMsg, err := h.DB.GetMessage(r.Context(), newMsgID)
+	if err != nil {
+		h.internalError(w, fmt.Errorf("get edited message: %w", err))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	encodeJSON(w, toMessageViews([]db.Message{newMsg})[0])
+}
+
+// ---------------------------------------------------------------------------
+// Agent listing
+// ---------------------------------------------------------------------------
+
+// AgentView is a JSON-friendly agent representation for API responses.
+type AgentView struct {
+	Name        string   `json:"name"`
+	Model       string   `json:"model,omitempty"`
+	Tools       []string `json:"tools,omitempty"`
+	ParentAgent string   `json:"parent_agent,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Mode        string   `json:"mode,omitempty"`
+}
+
+// HandleListAgents handles GET /agents.
+// Returns all registered agents from the in-memory registry.
+func (h *Handler) HandleListAgents(w http.ResponseWriter, r *http.Request) {
+	agents := h.Engine.Agents.List()
+	views := make([]AgentView, 0, len(agents))
+	for _, a := range agents {
+		views = append(views, toAgentView(a))
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	encodeJSON(w, views)
+}
+
+// HandleGetAgent handles GET /agents/{name}.
+// Returns details for a specific agent.
+func (h *Handler) HandleGetAgent(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		http.Error(w, "missing agent name", http.StatusBadRequest)
+		return
+	}
+
+	agent, err := h.Engine.Agents.Get(name)
+	if err != nil {
+		http.Error(w, "agent not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	encodeJSON(w, toAgentView(*agent))
+}
+
+// toAgentView converts a agent.Agent into a JSON-safe AgentView.
+func toAgentView(a agent.Agent) AgentView {
+	return AgentView{
+		Name:        a.Name,
+		Model:       a.Model,
+		Tools:       a.Tools,
+		ParentAgent: a.ParentAgent,
+		Description: a.Description,
+		Mode:        a.Mode,
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Memory endpoints
+// ---------------------------------------------------------------------------
+
+// MemoryView is a JSON-friendly memory representation.
+type MemoryView struct {
+	ID        string `json:"id"`
+	AgentName string `json:"agent_name"`
+	Key       string `json:"key"`
+	Value     string `json:"value"`
+	Category  string `json:"category,omitempty"`
+	CreatedAt int64  `json:"created_at"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+// HandleListMemory handles GET /memory?agent=NAME.
+// Lists all memory facts for the given agent.
+func (h *Handler) HandleListMemory(w http.ResponseWriter, r *http.Request) {
+	agentName := r.URL.Query().Get("agent")
+	if agentName == "" {
+		agentName = h.Config.DefaultAgent
+	}
+
+	facts, err := h.DB.ListMemoryByAgent(r.Context(), agentName)
+	if err != nil {
+		h.internalError(w, fmt.Errorf("list memory: %w", err))
+		return
+	}
+
+	views := make([]MemoryView, 0, len(facts))
+	for _, f := range facts {
+		views = append(views, toMemoryView(f))
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	encodeJSON(w, views)
+}
+
+// HandleGetMemory handles GET /memory/{key}?agent=NAME.
+// Returns a specific memory fact.
+func (h *Handler) HandleGetMemory(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	if key == "" {
+		http.Error(w, "missing memory key", http.StatusBadRequest)
+		return
+	}
+
+	agentName := r.URL.Query().Get("agent")
+	if agentName == "" {
+		agentName = h.Config.DefaultAgent
+	}
+
+	fact, err := h.DB.GetMemory(r.Context(), db.GetMemoryParams{
+		AgentName: agentName,
+		Key:       key,
+	})
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "memory not found", http.StatusNotFound)
+			return
+		}
+		h.internalError(w, fmt.Errorf("get memory: %w", err))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	encodeJSON(w, toMemoryView(fact))
+}
+
+// toMemoryView converts a db.Memory into a JSON-safe MemoryView.
+func toMemoryView(m db.Memory) MemoryView {
+	v := MemoryView{
+		ID:        m.ID,
+		AgentName: m.AgentName,
+		Key:       m.Key,
+		Value:     m.Value,
+		CreatedAt: m.CreatedAt,
+		UpdatedAt: m.UpdatedAt,
+	}
+	if m.Category.Valid {
+		v.Category = m.Category.String
+	}
+	return v
+}
+
+// ---------------------------------------------------------------------------
+// Abort
+// ---------------------------------------------------------------------------
+
+// HandleAbortSession handles POST /session/{id}/abort.
+// Cancels any running agent process for the session.
+func (h *Handler) HandleAbortSession(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("id")
+	if sessionID == "" {
+		http.Error(w, "missing session id", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.Engine.Abort(sessionID); err != nil {
+		// No active process is not an error for the client — treat as no-op success.
+		log.Printf("abort session %s: %v", sessionID, err)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	encodeJSON(w, map[string]string{"status": "aborted"})
+}
+
+// ---------------------------------------------------------------------------
+// Models listing
+// ---------------------------------------------------------------------------
+
+// ModelView is a JSON-friendly model representation (OpenAI-compatible).
+type ModelView struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
+}
+
+// HandleListModels handles GET /v1/models.
+// Lists agents as models for OpenAI-compatible tooling.
+func (h *Handler) HandleListModels(w http.ResponseWriter, r *http.Request) {
+	agents := h.Engine.Agents.List()
+	models := make([]ModelView, 0, len(agents)+1)
+
+	// Add the default config model first.
+	models = append(models, ModelView{
+		ID:      h.Config.LLM.Model,
+		Object:  "model",
+		Created: time.Now().Unix(),
+		OwnedBy: "gopengai",
+	})
+
+	// Add agent-specific models.
+	for _, a := range agents {
+		modelID := a.Model
+		if modelID == "" {
+			modelID = h.Config.LLM.Model
+		}
+		models = append(models, ModelView{
+			ID:      modelID,
+			Object:  "model",
+			Created: time.Now().Unix(),
+			OwnedBy: "agent:" + a.Name,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	encodeJSON(w, map[string]interface{}{
+		"object": "list",
+		"data":   models,
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -599,55 +919,11 @@ func toMessageViews(msgs []db.Message) []MessageView {
 	return views
 }
 
-// dbMessagesToLLM converts a slice of DB messages to LLM API messages.
-// Includes user, assistant (with tool_calls from ToolArgs), and tool messages.
-func dbMessagesToLLM(msgs []db.Message) []llm.Message {
-	out := make([]llm.Message, 0, len(msgs))
-	for _, m := range msgs {
-		switch m.Role {
-		case "user":
-			var content string
-			if m.Content.Valid {
-				content = m.Content.String
-			}
-			out = append(out, llm.Message{
-				Role:    m.Role,
-				Content: content,
-			})
-		case "assistant":
-			var content string
-			if m.Content.Valid {
-				content = m.Content.String
-			}
-			msg := llm.Message{
-				Role:    m.Role,
-				Content: content,
-			}
-			// Unmarshal tool_calls if present in ToolArgs.
-			if m.ToolArgs.Valid && m.ToolArgs.String != "" {
-				var toolCalls []llm.ToolCall
-				if err := json.Unmarshal([]byte(m.ToolArgs.String), &toolCalls); err == nil {
-					msg.ToolCalls = toolCalls
-				}
-			}
-			out = append(out, msg)
-		case "tool":
-			var content string
-			if m.Content.Valid {
-				content = m.Content.String
-			}
-			msg := llm.Message{
-				Role:    m.Role,
-				Content: content,
-			}
-			if m.ToolCallID.Valid {
-				msg.ToolCallID = m.ToolCallID.String
-			}
-			if m.ToolName.Valid {
-				msg.Name = m.ToolName.String
-			}
-			out = append(out, msg)
-		}
+// encodeJSON writes v as JSON to w and logs any write error for debugging.
+// Use in place of json.NewEncoder(w).Encode(v) to prevent silently dropped
+// errors when the client disconnects mid-response.
+func encodeJSON(w http.ResponseWriter, v interface{}) {
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Printf("json encode error: %v", err)
 	}
-	return out
 }

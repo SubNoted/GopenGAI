@@ -4,6 +4,8 @@
 [![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?logo=go)](https://go.dev/)
 [![Status](https://img.shields.io/badge/Status-Active-success)]()
 
+Made with AI
+
 **GoPengAI** is a Go-native AI agent system with a REST API inspired by [OpenCode](https://github.com/opencode-ai/opencode). It intelligently handles user requests by combining multiple tools — web fetch, memory storage, agent delegation — with LLM generation. Conversations support tree-based branching history for editing and forking.
 
 **Persistence:** SQLite (via `ncruces/go-sqlite3` — pure Go, no CGo), schema migrations via [Goose](https://github.com/pressly/goose), type-safe query generation via [sqlc](https://sqlc.dev/). One `.db` file per project, stored in `.gopengai/`.

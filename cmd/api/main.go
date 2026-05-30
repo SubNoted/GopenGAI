@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -69,7 +70,7 @@ func main() {
 	eventBus := api.NewEventBus()
 
 	// Initialize agent engine.
-	engine := agent.NewEngine(client, toolReg, histRepo, agentReg, database, queries, cfg, eventBus)
+	engine := agent.NewEngine(client, toolReg, histRepo, agentReg, queries, cfg, eventBus)
 
 	handler := &api.Handler{
 		LLM:      client,
@@ -78,64 +79,103 @@ func main() {
 		Config:   cfg,
 		Engine:   engine,
 		EventBus: eventBus,
+		History:  histRepo,
 	}
+
+	// Track active engine goroutines for graceful shutdown.
+	wg := &sync.WaitGroup{}
+	handler.Wg = wg
 
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux, handler)
 
+	// Wrap the mux with middleware: recovery → CORS → logging.
+	wrapped := api.ApplyMiddleware(mux,
+		api.RecoveryMiddleware,
+		api.CORSMiddleware,
+		api.LoggingMiddleware,
+	)
+
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 
 	srv := &http.Server{
-		Addr:    addr,
-		Handler: mux,
+		Addr:              addr,
+		Handler:           wrapped,
+		ReadHeaderTimeout: 10 * time.Second,  // protect against slow-loris
+		ReadTimeout:       30 * time.Second,  // full request read deadline
+		IdleTimeout:       120 * time.Second, // keep-alive connection timeout
+		// WriteTimeout is intentionally 0 — SSE connections must stay open
+		// indefinitely. Regular endpoints are protected by ReadTimeout.
 	}
 
 	// Channel to listen for OS signals for graceful shutdown.
-	quit := make(chan os.Signal, 2) // buffer of 2: first = graceful, second = force-kill
+	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	// Channel for fatal server startup errors (e.g., EADDRINUSE).
+	serverErr := make(chan error, 1)
 
 	// Start server in a goroutine.
 	go func() {
 		log.Printf("GoPengAI listening on %s", addr)
 		log.Printf("Endpoints:")
+		log.Printf("  GET  /health                      health check")
 		log.Printf("  POST /session                     create session")
 		log.Printf("  GET  /session                     list sessions")
 		log.Printf("  GET  /session/{id}                get session + messages")
+		log.Printf("  PATCH /session/{id}               update session title")
 		log.Printf("  DELETE /session/{id}              delete session")
+		log.Printf("  GET  /session/{id}/messages       get active branch messages")
+		log.Printf("  GET  /session/{id}/branches       list session branches")
+		log.Printf("  POST /session/{id}/fork           fork session at message")
+		log.Printf("  PUT  /session/{id}/branch         select active branch")
+		log.Printf("  POST /session/{id}/abort          abort running generation")
 		log.Printf("  POST /session/{id}/message        send message (history-aware)")
-		log.Printf("  POST /v1/chat/completions         OpenAI-compatible (no history)")
-		log.Printf("  GET  /health                      health check")
+		log.Printf("  GET  /events                      SSE stream (all sessions)")
+		log.Printf("  GET  /session/{id}/events         SSE stream (session-specific)")
+		log.Printf("  PATCH /messages/{id}              edit message (new branch)")
+		log.Printf("  GET  /agents                      list agents")
+		log.Printf("  GET  /agents/{name}               get agent details")
+		log.Printf("  GET  /memory?agent=NAME           list memory facts")
+		log.Printf("  GET  /memory/{key}?agent=NAME     get specific memory fact")
+		log.Printf("  GET  /v1/models                   list agents as models")
+		log.Printf("  POST /v1/chat/completions         OpenAI-compatible pass-through")
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("server error: %v", err)
-			os.Exit(1)
+			// Non-ErrServerClosed error (e.g., EADDRINUSE) — signal
+			// the main goroutine to perform clean shutdown instead of
+			// os.Exit which would bypass all cleanup.
+			serverErr <- err
 		}
 	}()
 
-	// Block until signal received.
-	sig := <-quit
-	log.Printf("received signal %v, shutting down...", sig)
-
-	// If a second signal arrives during graceful shutdown, force exit immediately.
-	go func() {
-		sig2 := <-quit
-		log.Printf("received second signal %v, forcing exit", sig2)
-		os.Exit(1)
-	}()
+	// Block until signal received or fatal server error.
+	var shutdownReason string
+	select {
+	case sig := <-quit:
+		shutdownReason = fmt.Sprintf("received signal %v", sig)
+	case err := <-serverErr:
+		shutdownReason = fmt.Sprintf("server error: %v", err)
+	}
+	log.Printf("%s, shutting down...", shutdownReason)
 
 	// Create a context with timeout for graceful shutdown.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 
-	// Shutdown HTTP server (drain connections).
+	// Disable keep-alives so idle connections don't block Shutdown.
+	srv.SetKeepAlivesEnabled(false)
+
+	// Shutdown HTTP server (drain in-flight requests).
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("HTTP server shutdown error: %v", err)
 	}
 
+	// Wait for all active engine goroutines to finish before closing
+	// the database (prevents "database is closed" errors in goroutines).
+	wg.Wait()
+
 	// Stop event bus (stops heartbeat, closes subscriber channels).
 	eventBus.Close()
-
-	// Close prepared statements.
-	queries.Close()
 
 	// Close database.
 	database.Close()

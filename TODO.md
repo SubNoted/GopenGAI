@@ -1,6 +1,6 @@
 # GoPengAI — Implementation TODO
 
-> **Last synced:** 2026-05-27 (Phase 6 + 7 EventBus complete; Phase 7 + 8 partial: sync session CRUD + CLI built; bug fixes: input validation, ToolCalls priority, stuck session defer, atomic DeleteSession tx, sanitized error leakage, Subscribe-after-Close, second-signal force-kill, tool 30s timeout)
+> **Last synced:** 2026-05-30 (code review fixes applied: sse.go, middleware.go, async 202, 22 routes, panic/timeout/Wg)
 > **Based on:** 10 architecture diagrams (01-container through 10-gopengai-container)
 > **Tech Stack:** Go 1.21+, SQLite3 (ncruces/go-sqlite3), sqlc, Goose, Cobra CLI, net/http, SSE
 > **Approach:** Pure Go — no CGo, no Python. All phases for semester 4 delivery. Local dev deployment.
@@ -8,20 +8,53 @@
 > **DB Design:** Adapted OpenCode SQLite model — 3 base tables extended for agents, memory, delegation
 > **Order:** Sequential phases. Each phase builds on the previous.
 
-## Overall Progress: ~76%
+## Overall Progress: ~72% (after code review fixes)
+
+| Phase | TODO claim | Actual | Gap |
+|-------|-----------|--------|-----|
+| Phase 0 (Bootstrap) | 100% | 100% | — |
+| Phase 1 (Config+DB) | 100% | 95% | `--port`/`--config` CLI flags |
+| Phase 2 (LLM Client) | 100% | 100% | — |
+| Phase 3 (Agent Types) | 100% | 85% | No example agents (researcher, analyst, summarizer) |
+| Phase 4 (History Tree) | 100% | 100% | — |
+| Phase 5 (Tools) | 100% | 100% | — |
+| Phase 6 (Agent Engine) | 100% | 100% | — |
+| Phase 7 (HTTP API) | 90% | **95%** | AuthMiddleware skeleton only; all 22+ endpoints wired, SSE streaming, async engine, middleware implemented |
+| Phase 8 (CLI) | 20% | **30%** | sync chat + session CRUD done; no SSE/agents/memory/branches |
+| Phase 9 (Testing) | 0% | **0%** | Zero test files exist |
+| Phase 10 (Docs) | 50% | **30%** | README outdated, no agent examples, diagrams need review |
+
+## ✅ RESOLVED CRITICAL ISSUES (code review 2026-05-30)
+
+| # | Issue | File | Status |
+|---|-------|------|--------|
+| 1 | **`sse.go` created** | `internal/api/sse.go` | ✅ Fully implemented: `writeSSE`, `HandleGlobalSSE`, `HandleSessionSSE`, `streamSSE` — newline sanitized |
+| 2 | **SSE HTTP handlers** | `internal/api/handler.go` | ✅ `HandleGlobalSSE` + `HandleSessionSSE` written, wired via `routes.go` |
+| 3 | **All 22+ routes** | `internal/api/routes.go` | ✅ All endpoints wired: SSE, branches, fork, abort, agents, memory, models |
+| 4 | **`middleware.go`** | `internal/api/middleware.go` | ✅ Logging, CORS (with `Vary: Origin`), Recovery (panic-safe) — all implemented |
+| 5 | **Zero tests** | everywhere | ❌ Still no `_test.go` files |
+| 6 | **Async message** | `handler.go` | ✅ `POST /session/{id}/message` returns 202 + spawns engine goroutine, results via SSE |
+
+## 🔴 REMAINING ISSUES (need fix)
+
+| # | Issue | File | Why Critical |
+|---|-------|------|-------------|
+| 1 | **Zero tests** | everywhere | No `_test.go` files exist anywhere in the project — fragile for refactoring |
+
+## Recommended correction (honest progress):
 
 ```
-Phase 0 (Bootstrap)    ██████████ 100%  (complete)
-Phase 1 (Config+DB)    ██████████ 100%  (complete)
-Phase 2 (LLM Client)   ██████████ 100%  (complete)
-Phase 3 (Agent Types)  ██████████ 100%  (complete)
-Phase 4 (History Tree) ██████████ 100%  (complete)
-Phase 5 (Tools)        ██████████ 100%  (complete)
-Phase 6 (Agent Engine) ██████████ 100%  (engine loop, EventBus, abort, tool execution, wiring)
-Phase 7 (HTTP API)     ████████░░  80%  (sync session CRUD + linear chat + EventBus + graceful shutdown built; SSE/async/branches still stubs)
-Phase 8 (CLI)          ██░░░░░░░░  20%  (sync chat + session commands built; no SSE streaming/agents/memory/branches)
-Phase 9 (Testing)      ░░░░░░░░░░   0%
-Phase 10 (Docs)        █████░░░░░  50%  (README, diagrams, Makefile, ЧТО_НУЖНО_ЗНАТЬ done; no agent examples)
+Phase 0 (Bootstrap)    ██████████ 100%  ✓
+Phase 1 (Config+DB)    █████████▌  95%  (CLI flags undone)
+Phase 2 (LLM Client)   ██████████ 100%  ✓
+Phase 3 (Agent Types)  █████████▌  85%  (examples missing)
+Phase 4 (History Tree) █████��████ 100%  ✓
+Phase 5 (Tools)        ██████████ 100%  ✓
+Phase 6 (Agent Engine) ██████████ 100%  ✓
+Phase 7 (HTTP API)     █████████▌  95%  (AuthMiddleware skeleton only)
+Phase 8 (CLI)          ███░░░░░░░  30%  (sync only, no SSE/agents/memory/branches)
+Phase 9 (Testing)      ░░░░░░░░░░   0%  (NOTHING)
+Phase 10 (Docs)        ███░░░░░░░  30%  (README outdated, no examples)
 ```
 
 ---
@@ -362,54 +395,58 @@ Phase 10 (Docs)        █████░░░░░  50%  (README, diagrams, M
 - [x] `Close()` — clean shutdown via done channel (TOCTOU-safe)
 
 ### 7.2 SSE Writer (`internal/api/sse.go`)
-- [ ] `WriteSSE(w http.ResponseWriter, event SSEEvent)` — format as SSE text
-- [ ] Flush support via `http.Flusher`
-- [ ] `HandleGlobalSSE(w, r)` — handler for `GET /event`
-- [ ] `HandleSessionSSE(w, r)` — handler for `GET /session/:id/events`
-- [ ] SSE writer file created (stub)
+- [x] `writeSSE(w http.ResponseWriter, event SSEEvent)` — format as SSE text with sanitization
+- [x] Flush support via `http.Flusher`
+- [x] `HandleGlobalSSE(w, r)` — handler for `GET /events`
+- [x] `HandleSessionSSE(w, r)` — handler for `GET /session/{id}/events`
+- [x] Shared `streamSSE()` method eliminating ~80% duplication
+- [x] Newline sanitization on both event type and data fields (SSE framing protection)
 
 ### 7.3 Routes (`internal/api/routes.go`)
 - [x] `RegisterRoutes(mux, handler)` — wire `/health` and `/v1/chat/completions`
 - [x] Added sync session CRUD + linear chat routes (Go 1.22+ method routing)
-- [ ] Refactor to async pattern: replace sync `POST /session/{id}/message` with 202 + SSE
-- [ ] Add remaining routes (agents, memory, SSE, control, OpenAI-compat)
+- [x] Refactor to async pattern: `POST /session/{id}/message` returns 202 + spawns engine goroutine
+- [x] Added all remaining routes (agents, memory, SSE, branches, fork, abort, models)
 
 ### 7.4 Handlers (`internal/api/handler.go`)
 
-> **⚠️ Current state (MVP):** Session CRUD and chat handlers are built synchronously. They work but use **linear** history (flat `ListMessagesBySession`, no tree traversal) and call the LLM **directly** (no agent engine).
-> **Planned state:** Handlers should be thin wrappers that enqueue work to the agent engine and return 202 + stream results via SSE.
+> **Current state (async + event-driven):** All session CRUD and chat handlers implemented. `POST /session/{id}/message` returns 202 Accepted and spawns agent engine goroutine. SSE-based response streaming. Panic recovery, concurrent request prevention (atomic DB status claim), 5-min timeout, 1MB MaxBytesReader, `encodeJSON` error-aware helper, WaitGroup tracking for graceful shutdown.
 
-**Done (sync MVP — may need refactoring for async):**
+**Implemented:**
 - [x] `GET /health` → `{"status": "ok"}`
 - [x] `POST /session` → create session `{title?, agent_name?}` → 201
 - [x] `GET /session` → list all sessions
 - [x] `GET /session/{id}` → get session detail + linear messages (not tree)
 - [x] `DELETE /session/{id}` → delete session + messages → 200
-- [x] `POST /session/{id}/message` → **sync**: save msg → call LLM directly → return response (no SSE, no agent engine)
+- [x] `POST /session/{id}/message` → **async**: 202 + engine goroutine + SSE events
 - [x] `POST /v1/chat/completions` → forwards to LLM, returns OpenAI format (basic pass-through)
-
-**Still planned (async + event-driven):**
-- [ ] `GET /event` → Global SSE stream (subscribe + hold connection)
-- [ ] `PATCH /session/:id` → update session `{title?}`
-- [ ] `GET /session/status` → status of all sessions
-- [ ] **Refactor** `POST /session/:id/message` → save user msg, spawn engine goroutine → **202**, stream via SSE
-- [ ] `GET /session/:id/messages` → get **active branch** messages (recursive CTE)
-- [ ] `GET /session/:id/events` → per-session SSE stream
-- [ ] `GET /session/:id/branches` → list all leaf nodes
-- [ ] `POST /session/:id/fork` → fork session at message `{message_id}`
-- [ ] `PUT /session/:id/branch` → select active branch `{leaf_id}`
-- [ ] `PATCH /messages/:id` → edit message → new branch `{content}`
-- [ ] `GET /agents` → list registered agents
-- [ ] `GET /agents/:name` → get agent detail
-- [ ] `GET /memory?agent=NAME` → list memory facts
-- [ ] `GET /memory/:key?agent=NAME` → get specific fact
-- [ ] `POST /session/:id/abort` → abort running generation
-- [ ] `GET /v1/models` → list agents as models
+- [x] `PATCH /session/:id` → update session `{title?}`
+- [x] `GET /session/status` → status of all sessions
+- [x] `GET /session/:id/messages` → get active branch messages (recursive CTE)
+- [x] `GET /session/:id/branches` → list all leaf nodes
+- [x] `POST /session/:id/fork` → fork session at message `{message_id}`
+- [x] `PUT /session/:id/branch` → select active branch `{leaf_id}`
+- [x] `PATCH /messages/:id` → edit message → new branch `{content}`
+- [x] `GET /agents` → list registered agents
+- [x] `GET /agents/:name` → get agent detail
+- [x] `GET /memory?agent=NAME` → list memory facts
+- [x] `GET /memory/:key?agent=NAME` → get specific fact
+- [x] `POST /session/:id/abort` → abort running generation
+- [x] `GET /v1/models` → list agents as models
+- [x] `GET /events` → global SSE stream
+- [x] `GET /session/:id/events` → per-session SSE stream
+- [x] `encodeJSON` helper — logs JSON encode errors instead of silently dropping
+- [x] `http.MaxBytesReader` (1MB) on all body-reading endpoints
+- [x] `Wg *sync.WaitGroup` on Handler for graceful goroutine tracking
+- [x] Atomic `UPDATE sessions SET status='working' WHERE id=? AND status='idle'` — mutual exclusion
+- [x] Error sanitization: no `err.Error()` leakage to client
 
 ### 7.5 Middleware (`internal/api/middleware.go`)
-- [ ] `LoggingMiddleware` — log method, path, status, duration (structured)
-- [ ] `CORSHeaders` — Allow-Origin: *, Allow-Methods, Allow-Headers
-- [ ] `RecoveryMiddleware` — panic recovery → 500 with error message
+- [x] `LoggingMiddleware` — log method, path, status, duration (structured, via `responseWriter` wrapper)
+- [x] `CORSMiddleware` — Allow-Origin: *, Allow-Methods, Allow-Headers, `Vary: Origin`, OPTIONS preflight (204)
+- [x] `RecoveryMiddleware` — panic recovery → 500 (safe if headers already committed)
+- [x] `ApplyMiddleware` — chain middleware outer→inner
+- [x] `responseWriter` — wrapper with status capture + `http.Flusher`/`http.Hijacker`/`http.Pusher` forwarding
 - [ ] `AuthMiddleware` skeleton (future: API key / JWT)
 
 ### 7.6 Server Entrypoint (`cmd/api/main.go`)
@@ -418,9 +455,12 @@ Phase 10 (Docs)        █████░░░░░  50%  (README, diagrams, M
 - [x] Initialize agent registry from `agents/` directory
 - [x] Initialize tool registry + register all tools
 - [x] Create EventBus, Agent Engine
-- [x] Create API handler (with DB + Config + Engine + EventBus wired) + register routes
+- [x] Create API handler (with DB + Config + Engine + EventBus + History + Wg wired) + register routes
 - [x] Start HTTP server on configured host:port
-- [x] Graceful shutdown (SIGINT/SIGTERM) — drain SSE connections via EventBus.Close, wait for server, close DB
+- [x] Graceful shutdown (SIGINT/SIGTERM) — `SetKeepAlivesEnabled(false)` → `srv.Shutdown(10s)` → `wg.Wait()` → `eventBus.Close()` → `database.Close()`
+- [x] Server timeouts: `ReadHeaderTimeout: 10s`, `ReadTimeout: 30s`, `IdleTimeout: 120s` (`WriteTimeout: 0` for SSE)
+- [x] Error channel for listen goroutine (no `os.Exit(1)` bypassing deferred cleanup)
+- [x] WaitGroup initialized and assigned to handler.Wg
 
 ---
 
@@ -553,3 +593,79 @@ Phase 0 (Bootstrap + Rename + go mod init)
 1. **Must Have:** Phases 0-7 (working API, agent loop, LLM calls, SQLite, SSE, basic tools)
 2. **Should Have:** Phase 8 (CLI client), Phase 9 (tests)
 3. **Nice to Have:** Advanced delegation, streaming LLM output, memory recall search
+
+---
+
+## 🔴 Critical Fixes (Audit 2026-05-30)
+
+These are blockers found during audit that need attention BEFORE new features:
+
+### Fix 1: Create `internal/api/sse.go` — SSE Writer & Handlers
+- [ ] **Implementation:** `WriteSSE(w, event)` — format as SSE text, flush via `http.Flusher`
+- [ ] **Implementation:** `HandleGlobalSSE(w, r)` — GET /event — subscribe to EventBus global, stream
+- [ ] **Implementation:** `HandleSessionSSE(w, r)` — GET /session/{id}/events — subscribe to session stream
+- [ ] **Test:** Use httptest + mock EventBus to verify SSE event formatting and streaming
+
+### Fix 2: Implement Middleware (`internal/api/middleware.go`)
+- [ ] `LoggingMiddleware` — log method, path, status, duration (structured)
+- [ ] `CORSHeaders` — Allow-Origin: *, Allow-Methods, Allow-Headers
+- [ ] `RecoveryMiddleware` — panic recovery → 500
+- [ ] `AuthMiddleware` skeleton (future: API key / JWT)
+- [ ] Wire middleware into server (handler wrapping or Go 1.22+ middleware pattern)
+
+### Fix 3: Register Missing Routes (`internal/api/routes.go`)
+- [ ] `GET /event` → HandleGlobalSSE
+- [ ] `GET /session/{id}/events` → HandleSessionSSE
+- [ ] `PATCH /session/{id}` → update session title
+- [ ] `GET /session/status` → status of all sessions
+- [ ] `GET /session/{id}/messages` → active branch messages (recursive CTE)
+- [ ] `GET /session/{id}/branches` → list all leaf nodes
+- [ ] `POST /session/{id}/fork` → fork session at message
+- [ ] `PUT /session/{id}/branch` → select active branch
+- [ ] `PATCH /messages/{id}` → edit message → new branch
+- [ ] `GET /agents` → list registered agents
+- [ ] `GET /agents/{name}` → get agent detail
+- [ ] `GET /memory?agent=NAME` → list memory facts
+- [ ] `GET /memory/{key}?agent=NAME` → get specific fact
+- [ ] `POST /session/{id}/abort` → abort running generation
+- [ ] `GET /v1/models` → list agents as models
+
+### Fix 4: Refactor `POST /session/{id}/message` to Async
+- [ ] Change response status from 200 → 202
+- [ ] Remove synchronous LLM call from handler
+- [ ] Instead: save user message → spawn `engine.Process()` goroutine → return 202 with location
+- [ ] Client receives response via SSE stream
+- [ ] **Test:** Integration test — POST message, collect SSE events, assert message.complete
+
+### Fix 5: Create Tests (Phase 9)
+- [ ] `internal/config/config_test.go` — test loading, defaults, env overrides
+- [ ] `internal/history/tree_test.go` — tree construction, branch selection, path traversal
+- [ ] `internal/history/branch_test.go` — edit message → new branch, fork session
+- [ ] `internal/agent/loader_test.go` — YAML frontmatter parsing with permissions
+- [ ] `internal/agent/engine_test.go` — loop logic with mock LLM client
+- [ ] `internal/tools/web_fetch_test.go` — HTTP mock, HTML stripping
+- [ ] `internal/tools/memory_test.go` — save/recall with mock DB
+- [ ] `internal/tools/delegate_test.go` — cycle detection, timeout
+- [ ] `internal/api/events_test.go` — EventBus subscribe/publish/unsubscribe/close
+- [ ] `internal/api/handler_test.go` — session CRUD, chat endpoint (httptest)
+- [ ] `internal/llm/client_test.go` — mock server, error handling
+
+### Fix 6: CLI Upgrades
+- [ ] CLI flag overrides: `--port`, `--config` in config loader
+- [ ] Upgrade `gopengai chat` to SSE streaming (subscribe to session SSE, display streamed tokens)
+- [ ] Display model name + usage in CLI output
+- [ ] `gopengai session branches <id>` — list leaves
+- [ ] `gopengai session fork <id> --message <msg_id>` — fork at message
+- [ ] `gopengai session switch <id> --leaf <leaf_id>` — select branch
+- [ ] `gopengai agents` — list agents
+- [ ] `gopengai agents info <name>` — agent detail
+- [ ] `gopengai memory list [--agent NAME]` — memory facts
+- [ ] `gopengai memory get <key> [--agent NAME]` — specific fact
+
+### Fix 7: Example Agents & Documentation
+- [ ] Create `agents/examples/researcher.md` with web_fetch + memory tools
+- [ ] Create `agents/examples/analyst.md` with memory + delegate tools
+- [ ] Create `agents/examples/summarizer.md` with no tools
+- [ ] Update `README.md` with actual API examples, CLI usage, SSE examples
+- [ ] Run `go fmt ./...` (format all code)
+- [ ] Verify diagrams in `DOCS/diagrams/` match current architecture
