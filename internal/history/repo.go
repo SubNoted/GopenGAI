@@ -96,12 +96,19 @@ func (r *Repository) GetActiveBranch(ctx context.Context, sessionID string) ([]d
 
 // GetActiveBranchByLeafID returns the root-to-leaf message path starting
 // from the given leaf ID using the recursive CTE query.
+// Note: GetBranchFromRootTo returns messages in leaf-to-root order, so we
+// reverse to get root-to-leaf ordering consistent with GetActiveBranch.
 func (r *Repository) GetActiveBranchByLeafID(ctx context.Context, leafID string) ([]db.Message, error) {
 	rows, err := r.q.GetBranchFromRootTo(ctx, leafID)
 	if err != nil {
 		return nil, fmt.Errorf("get branch: %w", err)
 	}
-	return branchRowsToMessages(rows), nil
+	msgs := branchRowsToMessages(rows)
+	// Reverse to get root-to-leaf order.
+	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
+		msgs[i], msgs[j] = msgs[j], msgs[i]
+	}
+	return msgs, nil
 }
 
 // GetAllLeaves returns all leaf messages in a session.
@@ -116,9 +123,10 @@ func (r *Repository) GetAllLeaves(ctx context.Context, sessionID string) ([]db.M
 // Session active leaf management
 // ---------------------------------------------------------------------------
 
-// UpdateActiveLeaf updates the session's active_leaf_id using a targeted
-// UPDATE (no read-modify-write). It does NOT validate the leaf exists or
-// belongs to the session — callers (e.g. SelectLeaf) should do that first.
+// UpdateActiveLeaf updates the session's active_leaf_id by reading the
+// current session state and writing back with the new leaf_id. It does NOT
+// validate the leaf exists or belongs to the session — callers (e.g. SelectLeaf)
+// should do that first.
 func (r *Repository) UpdateActiveLeaf(ctx context.Context, sessionID, leafID string) error {
 	// Use a targeted UPDATE via UpdateSession with only the active_leaf_id
 	// changed. Load the current session state to preserve other fields.

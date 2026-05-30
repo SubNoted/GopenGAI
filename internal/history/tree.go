@@ -103,10 +103,20 @@ func BuildTree(messages []db.Message) []*TreeNode {
 }
 
 // assignDepths recursively assigns Depth to each node.
+// Uses a visited set to guard against infinite recursion on cyclic trees,
+// which can occur from corrupted or deliberately circular parent_id chains.
 func assignDepths(node *TreeNode, depth int) {
+	assignDepthsWithVisited(node, depth, make(map[*TreeNode]bool))
+}
+
+func assignDepthsWithVisited(node *TreeNode, depth int, visited map[*TreeNode]bool) {
+	if visited[node] {
+		return // cycle detected — already processed this node
+	}
+	visited[node] = true
 	node.Depth = depth
 	for _, child := range node.Children {
-		assignDepths(child, depth+1)
+		assignDepthsWithVisited(child, depth+1, visited)
 	}
 }
 

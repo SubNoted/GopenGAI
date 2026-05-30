@@ -283,24 +283,38 @@ func (r *Repository) ForkSession(ctx context.Context, params ForkSessionParams) 
 	}
 
 	// Copy messages from the original branch into the new session.
+	// Two-pass approach: first generate all new IDs (so idMap is complete),
+	// then create messages with correct parent references.
+	// This is necessary because GetBranchFromRootTo returns messages in
+	// leaf-to-root order, so parents may not be mapped yet in a single pass.
 	idMap := make(map[string]string) // old ID -> new ID
+	type msgRow struct {
+		row       db.GetBranchFromRootToRow
+		newID     string
+		newParent sql.NullString
+	}
+	rows := make([]msgRow, len(branchMessages))
+	for i, row := range branchMessages {
+		rows[i].row = row
+		rows[i].newID = newID()
+		idMap[row.ID] = rows[i].newID
+	}
+	// Second pass: resolve parent references using the complete idMap.
 	var lastNewID string
-
-	for _, row := range branchMessages {
-		newMsgID := newID()
-		idMap[row.ID] = newMsgID
-
-		var newParentID sql.NullString
-		if row.ParentID.Valid {
-			if mappedID, ok := idMap[row.ParentID.String]; ok {
-				newParentID = sql.NullString{String: mappedID, Valid: true}
+	for i := range rows {
+		if rows[i].row.ParentID.Valid {
+			if mappedID, ok := idMap[rows[i].row.ParentID.String]; ok {
+				rows[i].newParent = sql.NullString{String: mappedID, Valid: true}
 			}
 		}
+	}
 
+	for _, r := range rows {
+		row := r.row
 		_, err := txq.CreateMessage(ctx, db.CreateMessageParams{
-			ID:         newMsgID,
+			ID:         r.newID,
 			SessionID:  newSession.ID,
-			ParentID:   newParentID,
+			ParentID:   r.newParent,
 			Role:       row.Role,
 			Parts:      row.Parts,
 			Content:    row.Content,
@@ -316,7 +330,7 @@ func (r *Repository) ForkSession(ctx context.Context, params ForkSessionParams) 
 		if err != nil {
 			return "", fmt.Errorf("copy message %s: %w", row.ID, err)
 		}
-		lastNewID = newMsgID
+		lastNewID = r.newID
 	}
 
 	// Add the new user message as a child of the last copied message.

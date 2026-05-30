@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -108,6 +109,18 @@ func (m *MemorySave) Execute(ctx context.Context, args json.RawMessage) (string,
 	q := QuerierFromContext(ctx)
 	if q == nil {
 		return "", fmt.Errorf("memory_save: database querier not set in context")
+	}
+
+	// Delete any existing memory with the same agent+key to support overwrites.
+	if existing, err := q.GetMemory(ctx, db.GetMemoryParams{
+		AgentName: agentName,
+		Key:       params.Key,
+	}); err == nil {
+		if delErr := q.DeleteMemory(ctx, existing.ID); delErr != nil {
+			return "", fmt.Errorf("memory_save: failed to overwrite existing memory: %w", delErr)
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("memory_save: lookup failed: %w", err)
 	}
 
 	now := time.Now().UnixMilli()
