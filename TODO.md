@@ -1,6 +1,6 @@
 # GoPengAI — Implementation TODO
 
-> **Last synced:** 2026-05-30 (Phase 7 finished: AuthMiddleware + server.api_key config + env override)
+> **Last synced:** 2026-05-30 (Phase 8 finished: CLI SSE streaming, agents, memory, branches, fork, switch)
 > **Based on:** 10 architecture diagrams (01-container through 10-gopengai-container)
 > **Tech Stack:** Go 1.21+, SQLite3 (ncruces/go-sqlite3), sqlc, Goose, Cobra CLI, net/http, SSE
 > **Approach:** Pure Go — no CGo, no Python. All phases for semester 4 delivery. Local dev deployment.
@@ -8,7 +8,7 @@
 > **DB Design:** Adapted OpenCode SQLite model — 3 base tables extended for agents, memory, delegation
 > **Order:** Sequential phases. Each phase builds on the previous.
 
-## Overall Progress: ~76% (Phase 7 complete)
+## Overall Progress: ~82% (Phase 8 complete)
 
 | Phase | TODO claim | Actual | Gap |
 |-------|-----------|--------|-----|
@@ -20,7 +20,7 @@
 | Phase 5 (Tools) | 100% | 100% | — |
 | Phase 6 (Agent Engine) | 100% | 100% | — |
 | Phase 7 (HTTP API) | 90% | **100%** | — |
-| Phase 8 (CLI) | 20% | **30%** | sync chat + session CRUD done; no SSE/agents/memory/branches |
+| Phase 8 (CLI) | 20% | **95%** | SSE streaming, agents, memory, branches, fork, switch — all done; `--port`/`--config` flags deferred to Phase 1 |
 | Phase 9 (Testing) | 0% | **0%** | Zero test files exist |
 | Phase 10 (Docs) | 50% | **30%** | README outdated, no agent examples, diagrams need review |
 
@@ -52,7 +52,7 @@ Phase 4 (History Tree) █████��████ 100%  ✓
 Phase 5 (Tools)        ██████████ 100%  ✓
 Phase 6 (Agent Engine) ██████████ 100%  ✓
 Phase 7 (HTTP API)     ██████████ 100%  ✓
-Phase 8 (CLI)          ███░░░░░░░  30%  (sync only, no SSE/agents/memory/branches)
+Phase 8 (CLI)          █████████▌  95%  (SSE streaming + all subcommands done; --port/--config flags belong to Phase 1)
 Phase 9 (Testing)      ░░░░░░░░░░   0%  (NOTHING)
 Phase 10 (Docs)        ███░░░░░░░  30%  (README outdated, no examples)
 ```
@@ -474,25 +474,25 @@ Phase 10 (Docs)        ███░░░░░░░  30%  (README outdated, no
 ### 8.2 Chat Command
 - [x] `gopengai chat "message" [--session-id ID] [--agent NAME]` — **sync**: send message, wait for JSON response
 - [x] Interactive mode: `gopengai chat` — REPL loop (sync polling)
-- [ ] Upgrade to SSE streaming: subscribe to session SSE, send message, display streamed tokens
-- [ ] Display model name + usage in output
+- [x] Upgrade to SSE streaming: subscribe to session SSE, send message, display streamed tokens (`--stream` flag, `parseSSE`/`readSSELine` helpers, token-by-token printing, tool call indicators)
+- [x] Display model name + usage in output (model, prompt_tokens, completion_tokens, total_tokens from `message.complete` SSE event)
 
 ### 8.3 Session Commands
 - [x] `gopengai session list` → list all sessions
 - [x] `gopengai session show <id>` → show session + linear messages
 - [x] `gopengai session create [--title T] [--agent NAME]` → create session
 - [x] `gopengai session delete <id>` → delete session
-- [ ] `gopengai session branches <id>` → list all leaves (requires Phase 4 tree implementation)
-- [ ] `gopengai session fork <id> --message <msg_id>` → fork at message (requires Phase 4)
-- [ ] `gopengai session switch <id> --leaf <leaf_id>` → select branch (requires Phase 4)
+- [x] `gopengai session branches <id>` → list all leaves (GET /session/{id}/branches, formatted table with ID/Role/Agent/Content)
+- [x] `gopengai session fork <id> --message <msg_id>` → fork at message (POST /session/{id}/fork, --message/-m, --content/-c, --title/-t, --agent/-a flags)
+- [x] `gopengai session switch <id> --leaf <leaf_id>` → select branch (PUT /session/{id}/branch, --leaf/-l flag)
 
 ### 8.4 Agent Commands
-- [ ] `gopengai agents` → list available agents
-- [ ] `gopengai agents info <name>` → show agent detail
+- [x] `gopengai agents` → list available agents (GET /agents, formatted table with Name/Model/Tools/Description)
+- [x] `gopengai agents info <name>` → show agent detail (GET /agents/{name}, Name/Model/Parent/Mode/Description/Tools)
 
 ### 8.5 Memory Commands
-- [ ] `gopengai memory list [--agent NAME]` → show memory facts
-- [ ] `gopengai memory get <key> [--agent NAME]` → get specific fact
+- [x] `gopengai memory list [--agent NAME]` → show memory facts (GET /memory?agent=NAME, table with Key/Category/Value)
+- [x] `gopengai memory get <key> [--agent NAME]` → get specific fact (GET /memory/{key}?agent=NAME, Key/Agent/Category/Value)
 
 ---
 
@@ -651,16 +651,16 @@ These are blockers found during audit that need attention BEFORE new features:
 - [ ] `internal/llm/client_test.go` — mock server, error handling
 
 ### Fix 6: CLI Upgrades
-- [ ] CLI flag overrides: `--port`, `--config` in config loader
-- [ ] Upgrade `gopengai chat` to SSE streaming (subscribe to session SSE, display streamed tokens)
-- [ ] Display model name + usage in CLI output
-- [ ] `gopengai session branches <id>` — list leaves
-- [ ] `gopengai session fork <id> --message <msg_id>` — fork at message
-- [ ] `gopengai session switch <id> --leaf <leaf_id>` — select branch
-- [ ] `gopengai agents` — list agents
-- [ ] `gopengai agents info <name>` — agent detail
-- [ ] `gopengai memory list [--agent NAME]` — memory facts
-- [ ] `gopengai memory get <key> [--agent NAME]` — specific fact
+- [ ] CLI flag overrides: `--port`, `--config` in config loader (deferred — belongs to Phase 1)
+- [x] Upgrade `gopengai chat` to SSE streaming (subscribe to session SSE, display streamed tokens, `--stream` flag)
+- [x] Display model name + usage in CLI output (model + token counts from `message.complete` SSE event)
+- [x] `gopengai session branches <id>` — list leaves (GET /session/{id}/branches, formatted table)
+- [x] `gopengai session fork <id> --message <msg_id>` — fork at message (POST /session/{id}/fork, `-m/-c/-t/-a` flags)
+- [x] `gopengai session switch <id> --leaf <leaf_id>` — select branch (PUT /session/{id}/branch, `-l` flag)
+- [x] `gopengai agents` — list agents (GET /agents, formatted table)
+- [x] `gopengai agents info <name>` — agent detail (GET /agents/{name})
+- [x] `gopengai memory list [--agent NAME]` — memory facts (GET /memory?agent=NAME)
+- [x] `gopengai memory get <key> [--agent NAME]` — specific fact (GET /memory/{key}?agent=NAME)
 
 ### Fix 7: Example Agents & Documentation
 - [ ] Create `agents/examples/researcher.md` with web_fetch + memory tools
