@@ -1,551 +1,163 @@
 # GoPengAI — Implementation TODO
 
-> **Last synced:** 2026-05-30 (Phase 8 finished: CLI SSE streaming, agents, memory, branches, fork, switch)
-> **Based on:** 10 architecture diagrams (01-container through 10-gopengai-container)
-> **Tech Stack:** Go 1.21+, SQLite3 (ncruces/go-sqlite3), sqlc, Goose, Cobra CLI, net/http, SSE
+> **Last synced:** 2026-05-30 (Phases 1, 3, 8 finished: CLI flags, example agents, all subcommands)
+> **Go version:** 1.26.1 (from `go.mod`)
+> **Tech Stack:** Go 1.26+, SQLite3 (ncruces/go-sqlite3), sqlc, Goose, Cobra CLI, net/http, SSE
 > **Approach:** Pure Go — no CGo, no Python. All phases for semester 4 delivery. Local dev deployment.
 > **API Design:** Adapted OpenCode hybrid — async message POST (202) + SSE streaming + tree-based history
-> **DB Design:** Adapted OpenCode SQLite model — 3 base tables extended for agents, memory, delegation
-> **Order:** Sequential phases. Each phase builds on the previous.
+> **DB Design:** Adapted OpenCode SQLite model — 5 tables extended for agents, memory, delegation
 
-## Overall Progress: ~82% (Phase 8 complete)
+## Overall Progress: ~91%
 
-| Phase | TODO claim | Actual | Gap |
-|-------|-----------|--------|-----|
+| Phase | Claim | Actual | Gap |
+|-------|-------|--------|-----|
 | Phase 0 (Bootstrap) | 100% | 100% | — |
-| Phase 1 (Config+DB) | 100% | 95% | `--port`/`--config` CLI flags |
+| Phase 1 (Config+DB) | 100% | **100%** | — |
 | Phase 2 (LLM Client) | 100% | 100% | — |
-| Phase 3 (Agent Types) | 100% | 85% | No example agents (researcher, analyst, summarizer) |
+| Phase 3 (Agent Types) | 100% | **100%** | — |
 | Phase 4 (History Tree) | 100% | 100% | — |
 | Phase 5 (Tools) | 100% | 100% | — |
 | Phase 6 (Agent Engine) | 100% | 100% | — |
-| Phase 7 (HTTP API) | 90% | **100%** | — |
-| Phase 8 (CLI) | 20% | **95%** | SSE streaming, agents, memory, branches, fork, switch — all done; `--port`/`--config` flags deferred to Phase 1 |
+| Phase 7 (HTTP API) | 100% | 100% | — |
+| Phase 8 (CLI) | 100% | **100%** | — |
 | Phase 9 (Testing) | 0% | **0%** | Zero test files exist |
-| Phase 10 (Docs) | 50% | **30%** | README outdated, no agent examples, diagrams need review |
+| Phase 10 (Docs) | 50% | **50%** | README outdated, diagrams need review, `go fmt` not run |
 
-## ✅ RESOLVED CRITICAL ISSUES (code review 2026-05-30)
-
-| # | Issue | File | Status |
-|---|-------|------|--------|
-| 1 | **`sse.go` created** | `internal/api/sse.go` | ✅ Fully implemented: `writeSSE`, `HandleGlobalSSE`, `HandleSessionSSE`, `streamSSE` — newline sanitized |
-| 2 | **SSE HTTP handlers** | `internal/api/handler.go` | ✅ `HandleGlobalSSE` + `HandleSessionSSE` written, wired via `routes.go` |
-| 3 | **All 22+ routes** | `internal/api/routes.go` | ✅ All endpoints wired: SSE, branches, fork, abort, agents, memory, models |
-| 4 | **`middleware.go`** | `internal/api/middleware.go` | ✅ Logging, CORS (with `Vary: Origin`), Recovery (panic-safe) — all implemented |
-| 5 | **Zero tests** | everywhere | ❌ Still no `_test.go` files |
-| 6 | **Async message** | `handler.go` | ✅ `POST /session/{id}/message` returns 202 + spawns engine goroutine, results via SSE |
-
-## 🔴 REMAINING ISSUES (need fix)
-
-| # | Issue | File | Why Critical |
-|---|-------|------|-------------|
-| 1 | **Zero tests** | everywhere | No `_test.go` files exist anywhere in the project — fragile for refactoring |
-
-## Recommended correction (honest progress):
+## Progress Bars
 
 ```
 Phase 0 (Bootstrap)    ██████████ 100%  ✓
-Phase 1 (Config+DB)    █████████▌  95%  (CLI flags undone)
+Phase 1 (Config+DB)    ██████████ 100%  ✓
 Phase 2 (LLM Client)   ██████████ 100%  ✓
-Phase 3 (Agent Types)  █████████▌  85%  (examples missing)
-Phase 4 (History Tree) █████��████ 100%  ✓
+Phase 3 (Agent Types)  ██████████ 100%  ✓
+Phase 4 (History Tree) ██████████ 100%  ✓
 Phase 5 (Tools)        ██████████ 100%  ✓
 Phase 6 (Agent Engine) ██████████ 100%  ✓
 Phase 7 (HTTP API)     ██████████ 100%  ✓
-Phase 8 (CLI)          █████████▌  95%  (SSE streaming + all subcommands done; --port/--config flags belong to Phase 1)
+Phase 8 (CLI)          ██████████ 100%  ✓
 Phase 9 (Testing)      ░░░░░░░░░░   0%  (NOTHING)
-Phase 10 (Docs)        ███░░░░░░░  30%  (README outdated, no examples)
+Phase 10 (Docs)        █████░░░░░  50%  (README outdated, diagrams need review)
 ```
 
----
+## ✅ Complete Phases (No Action Needed)
 
-## Phase 0: Project Bootstrap
-**Dependencies:** None
-**Goal:** Rename to gopengai, initialize Go module, create directory structure, verify build
+### Phase 0 — Project Bootstrap ✅
+All done: `go mod init`, directory structure, `.gitignore`, `gopengai.json.example`, build verification.
 
-- [x] `go mod init gopengai`
-- [x] Create directory structure per diagram `06-package-structure`:
-  ```
-  ├── cmd/api/main.go
-  ├── cmd/cli/main.go
-  ├── internal/
-  │   ├── api/       (handler, middleware, routes, events)
-  │   ├── agent/     (engine, loader, registry, types)
-  │   ├── tools/     (registry, web_fetch, memory, delegate)
-  │   ├── history/   (tree, repo, branch)
-  │   ├── llm/       (client, types, stream)
-  │   ├── db/
-  │   │   ├── connect.go        (SQLite connection + pragmas)
-  │   │   ├── embed.go          (embed migrations/ into binary)
-  │   │   ├── migrations/       (Goose SQL migration files)
-  │   │   │   ├── 001_initial.sql
-  │   │   │   └── ...
-  │   │   ├── sql/              (raw SQL queries for sqlc)
-  │   │   │   ├── sessions.sql
-  │   │   │   ├── messages.sql
-  │   │   │   ├── agents.sql
-  │   │   │   ├── memory.sql
-  │   │   │   └── delegation_logs.sql
-  │   │   ├── db.go             (sqlc-generated Queries struct)
-  │   │   ├── models.go         (sqlc-generated Go structs)
-  │   │   ├── querier.go        (sqlc-generated Querier interface)
-  │   │   └── *.sql.go          (sqlc-generated query implementations)
-  │   └── config/    (config)
-  ├── sqlc.yaml                  (sqlc configuration)
-  └── agents/
-      ├── default.md
-      └── examples/
-          ├── researcher.md
-          ├── analyst.md
-          └── summarizer.md
-  ```
-- [x] Add dependencies: `github.com/ncruces/go-sqlite3`, `github.com/pressly/goose/v3`, `github.com/spf13/cobra`, `gopkg.in/yaml.v3`
-- [x] Create `gopengai.json.example` with server, LLM, agents_dir, data_dir, default_agent fields
-- [x] Create `.gitignore`:
-  ```
-  # Binary
-  /gopengai
-  /api
-  /cli
-  *.exe
+### Phase 1 — Config & Database ✅
+All done: Config loading from JSON with env var overrides, `--config`/`--port` CLI flags, SQLite connection with ncruces/go-sqlite3 (pure Go), Goose migrations embedded and auto-applied, sqlc-generated CRUD for all 5 tables.
 
-  # Data directory (per-project SQLite)
-  .gopengai/
+### Phase 2 — LLM Client ✅
+All done: OpenAI-compatible HTTP client, ChatCompletion, streaming skeleton, tool calling support, structured types.
 
-  # Go
-  vendor/
+### Phase 3 — Agent Types ✅
+All done: Agent struct with YAML frontmatter parsing, loader, registry, default agent (`agents/default.md`), 3 example agents (`researcher`, `analyst`, `summarizer`).
 
-  # IDE
-  .idea/
-  .vscode/
-  .zed/
-  ```
-- [x] Verify `go build ./cmd/api/` and `go build ./cmd/cli/` succeed (empty main files)
-- [x] Verify `go vet ./...` passes
+### Phase 4 — History Tree ✅
+All done: Repository wrapper, tree operations (build/extract/find/insert), branch management (select leaf, edit→new-branch, fork session with transactions), session context builder with truncation.
+
+### Phase 5 — Tools ✅
+All done: Tool interface, registry with permission checking, WebFetch tool, MemorySave/MemoryRecall tools, Delegate tool with cycle detection and timeout.
+
+### Phase 6 — Agent Engine ✅
+All done: Core agent loop with async processing, tool-calling loop, event publishing, message persistence, token counting, abort support with context cancellation.
+
+### Phase 7 — HTTP API ✅
+All done: EventBus with subscribe/publish/unsubscribe/close/heartbeat, SSE writer and handlers (global + session), all 22+ routes wired (session CRUD, async message with 202, branches, fork, abort, agents, memory, models, OpenAI compat), all 4 middleware functions (Auth, Logging, CORS, Recovery), graceful shutdown with WaitGroup + context + signal handling, server timeouts.
+
+### Phase 8 — CLI ✅
+All done: Full command tree (`chat`, `session`, `agents`, `memory`), sync mode (202 accepted), SSE streaming mode (`--stream` flag), REPL loop, session list/show/create/delete/branches/fork/switch, agents list/info, memory list/get, all HTTP helpers with auth support.
 
 ---
 
-## Phase 1: Configuration & Database Layer
-**Dependencies:** Phase 0
-**Goal:** Config loading from gopengai.json, SQLite connection, Goose migrations, sqlc-generated CRUD
+## 🔴 Remaining Work
 
-### 1.1 Configuration (`internal/config/config.go`)
-- [x] Define `Config` struct matching `gopengai.json` schema (ServerConfig, LLMConfig, AgentsDir, DataDir, DefaultAgent)
-- [x] `Load(path string) (*Config, error)` — read JSON file, apply defaults
-- [x] Env var overrides: `GOPENGAI_PORT`, `GOPENGAI_LLM_API_KEY`, etc.
-- [ ] CLI flag overrides: `--port`, `--config`
+### Phase 9 — Testing
 
-### 1.2 Database Connection (`internal/db/connect.go`)
-- [x] `Open(path string) (*sql.DB, error)` — open SQLite via `ncruces/go-sqlite3` (pure Go, no CGo)
-- [x] Set pragmas on connection: `foreign_keys=ON`, `journal_mode=WAL`, `page_size=4096`, `cache_size=-8000`, `synchronous=NORMAL`, `busy_timeout=5000`
-- [x] Connection pooling: `SetMaxOpenConns(1)` (SQLite single-writer), `SetMaxIdleConns(1)`
+**Dependencies:** All other phases complete
 
-### 1.3 Migrations (`internal/db/migrations/`)
-- [x] Use **Goose** (`github.com/pressly/goose/v3`) for migration management
-- [x] Embed migrations in binary via `go:embed`
-- [x] `Migrate(db *sql.DB) error` — runs `goose.Up()` on startup
-- [x] **Migration 1: `001_initial.sql`** — all 5 tables, 5 triggers, 4 indexes, foreign keys (fully written)
-- [x] **Triggers** (auto-update timestamps, message counts):
-  - `update_sessions_updated_at` — on session update
-  - `update_messages_updated_at` — on message update
-  - `update_memory_updated_at` — on memory update
-  - `update_session_message_count_on_insert` — increment on message insert
-  - `update_session_message_count_on_delete` — decrement on message delete
-- [x] **Indexes**:
-  - `idx_messages_session_id` on messages (session_id)
-  - `idx_messages_parent_id` on messages (parent_id)
-  - `idx_memory_agent_name` on memory (agent_name)
-  - `idx_delegation_logs_parent` on delegation_logs (parent_message_id)
+**Goal:** Unit tests + integration tests for all components.
 
-### 1.4 sqlc Setup (`sqlc.yaml`)
-- [x] Configure sqlc v1.29+ for SQLite engine — `sqlc.yaml` fully written
-- [x] Write raw SQL queries in `internal/db/sql/*.sql`:
-  - `sessions.sql` — CreateSession, GetSessionByID, ListSessions, UpdateSession, DeleteSession
-  - `messages.sql` — CreateMessage, GetMessage, ListMessagesBySession, GetBranchFromRootTo (recursive CTE), GetAllLeaves, UpdateMessage, DeleteMessage, DeleteSessionMessages
-  - `agents.sql` — CreateAgent, GetAgent, ListAgents, DeleteAgent
-  - `memory.sql` — CreateMemory, GetMemory, ListMemoryByAgent, DeleteMemory
-  - `delegation_logs.sql` — CreateDelegationLog, ListDelegationLogsBySession
-- [x] Run `sqlc generate` to produce Go code (requires `go.mod` + dependencies first)
+#### 9.1 Unit Tests — Config & DB
+**Files:**
+- Create: `internal/config/config_test.go`
+- Create: `internal/db/connect_test.go`
 
-### 1.5 Generated Querier Interface (`internal/db/querier.go`)
-- [x] sqlc-generated `Querier` interface (generated by `sqlc generate`)
+- [ ] `config_test.go` — test JSON loading, defaults, env var overrides
+- [ ] `connect_test.go` — test SQLite open + migrate with in-memory DB
 
-### 1.6 Data Directory Setup
-- [x] Default data dir: `.gopengai/` (per-project, gitignored)
-- [x] `.gopengai/` already in `.gitignore`
+#### 9.2 Unit Tests — History
+**Files:**
+- Create: `internal/history/tree_test.go`
+- Create: `internal/history/branch_test.go`
+- Create: `internal/history/context_test.go`
 
----
+- [ ] `tree_test.go` — test BuildTree, GetLongestLeaf, GetPathFromRoot, FindNode, IsLeaf
+- [ ] `branch_test.go` — test SelectLeaf, EditMessage→new-branch, ForkSession with transaction rollback
+- [ ] `context_test.go` — test BuildContext, truncation logic
 
-## Phase 2: LLM Client Layer
-**Dependencies:** Phase 1
-**Goal:** OpenAI-compatible HTTP client for LLM calls with tool support
+#### 9.3 Unit Tests — Agent
+**Files:**
+- Create: `internal/agent/loader_test.go`
+- Create: `internal/agent/engine_test.go`
 
-### 2.1 LLM Types (`internal/llm/types.go`)
-- [x] Define structs: `ChatCompletionRequest`, `Message`, `ChatCompletionResponse`, `Choice`, `Usage`, `APIError` — basic OpenAI-compatible types with correct JSON tags
-- [x] Add `ToolDefinition`, `ToolFunction`, `ToolCall`, `MessageResponse` structs for tool calling support
+- [ ] `loader_test.go` — test YAML frontmatter parsing with permissions and system prompt extraction
+- [ ] `engine_test.go` — test Process loop with mock LLM client (httptest), tool calling cycle, abort
 
-### 2.2 LLM Client (`internal/llm/client.go`)
-- [x] `Client` struct with `BaseURL`, `APIKey`, `Model`, `HTTPClient`
-- [x] `NewClient(baseURL, apiKey, model string) *Client`
-- [x] `ChatCompletion(ctx, messages) (*ChatCompletionResponse, error)` — HTTP POST with context + error handling
-- [x] Support `tool_choice: "auto"` for tool calling
-- [x] Structured error type for non-200 responses (currently plain `fmt.Errorf`)
-- [x] Accept `config.LLMConfig` instead of 3 separate params in `NewClient`
+#### 9.4 Unit Tests — Tools
+**Files:**
+- Create: `internal/tools/web_fetch_test.go`
+- Create: `internal/tools/memory_test.go`
+- Create: `internal/tools/delegate_test.go`
 
-### 2.3 Streaming Skeleton (`internal/llm/stream.go`)
-- [x] SSE parsing infrastructure
-- [x] `StreamCompletion(ctx, *CompletionRequest) (<-chan *CompletionResponse, error)`
-- [x] Mark as future feature — focus on non-streaming first
+- [ ] `web_fetch_test.go` — HTTP mock server, HTML stripping, max size enforcement
+- [ ] `memory_test.go` — save/recall with mock DB querier, agent scoping
+- [ ] `delegate_test.go` — cycle detection, timeout, delegation logging
 
----
+#### 9.5 Unit Tests — LLM & API
+**Files:**
+- Create: `internal/llm/client_test.go`
+- Create: `internal/api/events_test.go`
+- Create: `internal/api/handler_test.go`
+- Create: `internal/api/middleware_test.go`
 
-## Phase 3: Agent Types & Loader
-**Dependencies:** Phase 2
-**Goal:** Define agent data types, parse `.md` config files with YAML frontmatter, build registry
+- [ ] `client_test.go` — mock server, success/error responses, tool calling format
+- [ ] `events_test.go` — EventBus subscribe/publish/unsubscribe/close, slow listener drop
+- [ ] `handler_test.go` — httptest-based session CRUD, chat (202 + SSE events), branches, fork, abort, agents, memory
+- [ ] `middleware_test.go` — auth (valid/invalid key, empty key skips), CORS headers, logging capture
 
-### 3.1 Agent Types (`internal/agent/types.go`)
-- [x] `Agent` struct: `Name`, `SystemPrompt`, `Tools []string`, `Model`, `ParentAgent`, `Permissions map[string]string`, `ConfigPath`
-- [x] `Message` struct (in-memory): `Role`, `Content`, `ToolCalls`, `ToolCallID`, `Name`
-- [x] `ToolCall` struct: `ID`, `Name`, `Arguments`
-- [x] `Response` struct: `Content`, `Usage`, `StopReason`, `Error`
-- [x] Helper methods: `HasTool()`, `IsToolAllowed()` on `Agent`
+#### 9.6 Integration Tests
+**Files:**
+- Create: `tests/integration/chat_flow_test.go`
 
-### 3.2 Agent Loader (`internal/agent/loader.go`)
-- [x] `LoadAgent(path string) (*Agent, error)` — read `.md` file, parse YAML frontmatter
-- [x] YAML frontmatter fields: `name`, `model`, `tools`, `parent_agent`, `permissions`
-- [x] Body of `.md` file = system prompt (if not in frontmatter `system_prompt` field)
-- [x] Parse `permissions` as `map[string]string` (`tool_name → "allow"/"deny"`)
-- [x] `LoadDirectory(dir string) (map[string]*Agent, error)` — scan all `.md` files
+- [ ] Full chat flow: POST message → SSE events → message.complete
+- [ ] Branch creation via message edit
+- [ ] Session fork
+- [ ] Tool permission deny
+- [ ] Abort mid-generation
 
-### 3.3 Agent Registry (`internal/agent/registry.go`)
-- [x] In-memory `Registry` with `map[string]*Agent`
-- [x] `Register(agent *Agent)`
-- [x] `Get(name string) (*Agent, error)`
-- [x] `List() []Agent`
-- [x] `Names() []string`
-- [x] `Has(name string) bool`
-- [x] `Size() int`
-- [x] `InitializeFromDir(dir string) (int, error)` — convenience wrapper around Loader
+#### 9.7 Test Infrastructure
+- [ ] Mock HTTP server for LLM responses (`net/http/httptest`)
+- [ ] Temporary SQLite databases per test suite
+- [ ] SSE test helpers (subscribe topic, collect events, assert event types)
 
-### 3.4 Default Agent Config
-- [x] Create `agents/default.md`:
-  ```markdown
-  ---
-  name: default
-  tools: []
-  permissions: {}
-  ---
+### Phase 10 — Documentation & Polish
 
-  You are a helpful AI assistant. Answer questions concisely and accurately.
-  ```
-- [ ] Create `agents/examples/researcher.md` with web_fetch + memory tools allowed
-- [ ] Create `agents/examples/analyst.md` with memory + delegate tools allowed
-- [ ] Create `agents/examples/summarizer.md` with no tools
+**Dependencies:** All other phases complete
 
----
+**Goal:** Updated README, example agents, code formatting.
 
-## Phase 4: History Tree (Conversation Management)
-**Dependencies:** Phase 1, Phase 3
-**Goal:** Tree-structured conversation history with branch support (uses sqlc-generated queries)
+#### 10.1 Documentation
+**Files:**
+- Modify: `README.md`
 
-### 4.1 Repository Wrapper (`internal/history/repo.go`)
-- [x] Thin wrapper around sqlc-generated `db.Querier` for history-specific operations
-- [x] `InsertMessage(ctx, params) (Message, error)` — delegates to `db.CreateMessage`
-- [x] `GetMessagesForSession(ctx, sessionID) ([]Message, error)` — delegates to `db.ListMessagesBySession`
-- [x] `GetActiveBranch(ctx, sessionID) ([]Message, error)` — loads active branch via recursive CTE or tree fallback
-- [x] `GetActiveBranchByLeafID(ctx, leafID) ([]Message, error)` — delegates to `db.GetBranchFromRootTo` (recursive CTE)
-- [x] `GetAllLeaves(ctx, sessionID) ([]Message, error)` — delegates to `db.GetAllLeaves`
-- [x] `GetMessageByID(ctx, id) (Message, error)` — delegates to `db.GetMessage`
-- [x] `UpdateActiveLeaf(ctx, sessionID, leafID) error` — sets active_leaf_id without read-modify-write race
-
-### 4.2 Tree Operations (`internal/history/tree.go`)
-- [x] `BuildTree(messages) []*TreeNode` — construct in-memory tree from flat list (handles mixed roots + orphans)
-- [x] `GetLongestLeaf(roots) *TreeNode` — longest root→leaf path (default active branch)
-- [x] `GetPathFromRoot(node) []*TreeNode` — traverse root to node via Parent pointer
-- [x] `InsertNode(roots, parentID, msg) *TreeNode` — add child to in-memory tree
-- [x] `FindNode(roots, id) *TreeNode` — BFS node lookup
-- [x] `GetLeafByID(roots, id) *TreeNode` — find leaf by ID
-- [x] `IsLeaf(node) bool` — leaf predicate
-- [x] `ToAgentMessages(messages) []agent.Message` — convert DB messages to agent messages
-- [x] `TreeNode` struct with `Parent` pointer for upward traversal
-
-### 4.3 Branch Management (`internal/history/branch.go`)
-- [x] `SelectLeaf(ctx, sessionID, leafID) error` — set active_leaf_id with ownership & leaf validation
-- [x] `EditMessage(ctx, params) (newMsgID, error)` — new branch from parent of original (in transaction)
-- [x] `ForkSession(ctx, params) (newSessionID, error)` — create new session branching from point (in transaction)
-- [x] Input validation: Role allowlist, Content size limit (100KB), FromMessageID ownership check
-- [x] All write operations wrapped in `sql.Tx` with atomic commit/rollback
-
-### 4.4 Session Context Builder (`internal/history/context.go`)
-- [x] `BuildContext(ctx, sessionID, systemPrompt, maxTokens) ([]llm.Message, error)` — load branch, prepend system prompt, convert to LLM messages
-- [x] Truncate if branch history exceeds context window limit (oldest messages dropped first, system prompt preserved)
-- [x] Token estimation heuristic (~4 chars/token)
-
----
-
-## Phase 5: Tool Registry & Implementations
-**Dependencies:** Phase 2, Phase 3, Phase 4
-**Goal:** Tool interface, registry, 3 tool implementations, permission checking
-
-### 5.1 Tool Interface (`internal/tools/registry.go`)
-- [x] Define `Tool` interface:
-  ```go
-  type Tool interface {
-      Name() string
-      Description() string
-      Parameters() json.RawMessage  // JSON Schema
-      Execute(ctx context.Context, args json.RawMessage) (string, error)
-  }
-  ```
-- [x] `Registry` struct: `map[string]Tool`
-- [x] `Register(tool Tool)`
-- [x] `Get(name string) (Tool, error)`
-- [x] `ToToolDefinitions() []llm.ToolDefinition` — convert to LLM API format
-- [x] `IsAllowed(toolName string, permissions map[string]string) bool` — check allow/deny
-
-### 5.2 Web Fetch Tool (`internal/tools/web_fetch.go`)
-- [x] `WebFetchTool` implementing `Tool` interface
-- [x] `Parameters()`: `{ "type": "object", "properties": { "url": { "type": "string" } }, "required": ["url"] }`
-- [x] `Execute`: HTTP GET URL, extract text content (strip HTML), return first N chars
-- [x] User-Agent header, timeout (10s), max response size (50KB)
-
-### 5.3 Memory Tools (`internal/tools/memory.go`)
-- [x] `MemorySave` tool:
-  - Parameters: `{ "key": "string", "value": "string", "category": "string" }`
-  - Execute: call `db.SaveMemory(agentName, key, value, category)`
-- [x] `MemoryRecall` tool:
-  - Parameters: `{ "key": "string" }` (empty = list all)
-  - Execute: call `db.GetMemory` or `db.ListMemory`
-- [x] Both scoped to current agent_name from context
-
-### 5.4 Delegate Tool (`internal/tools/delegate.go`)
-- [x] `DelegateTool` implementing `Tool` interface
-- [x] Parameters: `{ "agent_name": "string", "task": "string" }`
-- [x] Execute: load sub-agent from registry, build new context, call engine recursively
-- [x] Log delegation to `delegation_logs` table
-- [x] Timeout protection (30s max for sub-agent)
-- [x] Cycle detection (visited set of agent names in delegation chain)
-
----
-
-## Phase 6: Agent Engine (Core Loop)
-**Dependencies:** Phase 2, Phase 3, Phase 4, Phase 5
-**Goal:** Core agent loop with async processing, event publishing, and permission checking
-
-### 6.1 Engine (`internal/agent/engine.go`)
-- [x] `Engine` struct with dependencies: `llm.Client`, `tool.Registry`, `HistoryRepository`, `agent.Registry`, `*sql.DB`, `db.Querier`, `*config.Config`, `EventBus`
-- [x] `Process(ctx, sessionID, message, agentName) error` (async — runs in goroutine):
-  1. Set session status → "working", publish `session.status` event
-  2. Ensure session exists (create if not)
-  3. Load agent from registry
-  4. Save user message to history (parent = active_leaf)
-  5. Build context: system prompt + branch history + new user message
-  6. Convert to LLM messages array
-  7. Loop (max N iterations from config):
-     a. Call LLM with tool definitions
-     b. If `stop_reason == "stop"`:
-        - Publish `message.part.added`, `message.part.updated` events (streaming)
-        - Save assistant message to history
-        - Publish `message.complete` event
-        - Update active_leaf_id
-        - Break
-     c. If `tool_calls`:
-        - For each tool call:
-          - Publish `message.tool.started` event
-          - Check permission: `IsAllowed(toolName, agent.Permissions)`
-          - If denied: save "tool denied" result, publish `message.tool.error`
-          - If allowed: execute tool, publish `message.tool.completed`
-          - Save tool call message + tool result message to history
-          - Append to context
-        - Continue loop
-  8. On error: publish `message.error` event
-  9. defer: set session status → "idle", publish `session.status` event
-
-### 6.2 Message Persistence
-- [x] On user message: `InsertMessage` with parent = current active_leaf
-- [x] On assistant message: `InsertMessage` with parent = user message
-- [x] On tool calls: `InsertMessage` (role=assistant, tool_calls) → parent = user message
-- [x] On tool results: `InsertMessage` (role=tool, tool_call_id) → parent = assistant tool call
-- [x] Update `active_leaf_id` on session after full assistant response
-
-### 6.3 Token Counting & Usage Tracking
-- [x] Track token_count per message (from LLM response `usage` field)
-- [x] Aggregate in completion event
-
-### 6.4 Abort Support
-- [x] `Abort(sessionID string) error` — cancel context for running engine goroutine
-- [x] Goroutine checks `ctx.Err()` at loop boundaries
-- [x] Publish `message.error` with "aborted" status
-
----
-
-## Phase 7: HTTP API Server + SSE Events
-**Dependencies:** Phase 1, Phase 6
-**Goal:** REST API with async message handling, SSE event streaming, and OpenAI-compatible endpoints
-
-### 7.1 Event Bus (`internal/api/events.go`)
-- [x] `EventBus` struct with `sync.RWMutex`, `global []chan SSEEvent`, `sessions map[string][]chan SSEEvent`
-- [x] `SSEEvent` struct: `Type string`, `Properties interface{}`
-- [x] `Subscribe(sessionID string) <-chan SSEEvent` — register listener
-- [x] `Unsubscribe(sessionID string, ch <-chan SSEEvent)` — remove listener
-- [x] `PublishGlobal(eventType, properties)` — send to all global listeners (non-blocking, implements `agent.EventBus`)
-- [x] `PublishSession(sessionID, eventType, properties)` — send to session listeners (non-blocking)
-- [x] Slow listener protection: drop events if channel buffer full
-- [x] Heartbeat goroutine: publish `heartbeat` every 15s
-- [x] `Close()` — clean shutdown via done channel (TOCTOU-safe)
-
-### 7.2 SSE Writer (`internal/api/sse.go`)
-- [x] `writeSSE(w http.ResponseWriter, event SSEEvent)` — format as SSE text with sanitization
-- [x] Flush support via `http.Flusher`
-- [x] `HandleGlobalSSE(w, r)` — handler for `GET /events`
-- [x] `HandleSessionSSE(w, r)` — handler for `GET /session/{id}/events`
-- [x] Shared `streamSSE()` method eliminating ~80% duplication
-- [x] Newline sanitization on both event type and data fields (SSE framing protection)
-
-### 7.3 Routes (`internal/api/routes.go`)
-- [x] `RegisterRoutes(mux, handler)` — wire `/health` and `/v1/chat/completions`
-- [x] Added sync session CRUD + linear chat routes (Go 1.22+ method routing)
-- [x] Refactor to async pattern: `POST /session/{id}/message` returns 202 + spawns engine goroutine
-- [x] Added all remaining routes (agents, memory, SSE, branches, fork, abort, models)
-
-### 7.4 Handlers (`internal/api/handler.go`)
-
-> **Current state (async + event-driven):** All session CRUD and chat handlers implemented. `POST /session/{id}/message` returns 202 Accepted and spawns agent engine goroutine. SSE-based response streaming. Panic recovery, concurrent request prevention (atomic DB status claim), 5-min timeout, 1MB MaxBytesReader, `encodeJSON` error-aware helper, WaitGroup tracking for graceful shutdown.
-
-**Implemented:**
-- [x] `GET /health` → `{"status": "ok"}`
-- [x] `POST /session` → create session `{title?, agent_name?}` → 201
-- [x] `GET /session` → list all sessions
-- [x] `GET /session/{id}` → get session detail + linear messages (not tree)
-- [x] `DELETE /session/{id}` → delete session + messages → 200
-- [x] `POST /session/{id}/message` → **async**: 202 + engine goroutine + SSE events
-- [x] `POST /v1/chat/completions` → forwards to LLM, returns OpenAI format (basic pass-through)
-- [x] `PATCH /session/:id` → update session `{title?}`
-- [x] `GET /session/status` → status of all sessions
-- [x] `GET /session/:id/messages` → get active branch messages (recursive CTE)
-- [x] `GET /session/:id/branches` → list all leaf nodes
-- [x] `POST /session/:id/fork` → fork session at message `{message_id}`
-- [x] `PUT /session/:id/branch` → select active branch `{leaf_id}`
-- [x] `PATCH /messages/:id` → edit message → new branch `{content}`
-- [x] `GET /agents` → list registered agents
-- [x] `GET /agents/:name` → get agent detail
-- [x] `GET /memory?agent=NAME` → list memory facts
-- [x] `GET /memory/:key?agent=NAME` → get specific fact
-- [x] `POST /session/:id/abort` → abort running generation
-- [x] `GET /v1/models` → list agents as models
-- [x] `GET /events` → global SSE stream
-- [x] `GET /session/:id/events` → per-session SSE stream
-- [x] `encodeJSON` helper — logs JSON encode errors instead of silently dropping
-- [x] `http.MaxBytesReader` (1MB) on all body-reading endpoints
-- [x] `Wg *sync.WaitGroup` on Handler for graceful goroutine tracking
-- [x] Atomic `UPDATE sessions SET status='working' WHERE id=? AND status='idle'` — mutual exclusion
-- [x] Error sanitization: no `err.Error()` leakage to client
-
-### 7.5 Middleware (`internal/api/middleware.go`)
-- [x] `LoggingMiddleware` — log method, path, status, duration (structured, via `responseWriter` wrapper)
-- [x] `CORSMiddleware` — Allow-Origin: *, Allow-Methods, Allow-Headers, `Vary: Origin`, OPTIONS preflight (204)
-- [x] `RecoveryMiddleware` — panic recovery → 500 (safe if headers already committed)
-- [x] `ApplyMiddleware` — chain middleware outer→inner
-- [x] `responseWriter` — wrapper with status capture + `http.Flusher`/`http.Hijacker`/`http.Pusher` forwarding
-- [x] `AuthMiddleware` — bearer-token auth with `server.api_key` config + `GOPENGAI_API_KEY` env override (no-op if empty, skips /health)
-
-### 7.6 Server Entrypoint (`cmd/api/main.go`)
-- [x] Load config from `gopengai.json` (hardcoded path + os.Args fallback)
-- [x] Open database + run migrations
-- [x] Initialize agent registry from `agents/` directory
-- [x] Initialize tool registry + register all tools
-- [x] Create EventBus, Agent Engine
-- [x] Create API handler (with DB + Config + Engine + EventBus + History + Wg wired) + register routes
-- [x] Start HTTP server on configured host:port
-- [x] Graceful shutdown (SIGINT/SIGTERM) — `SetKeepAlivesEnabled(false)` → `srv.Shutdown(10s)` → `wg.Wait()` → `eventBus.Close()` → `database.Close()`
-- [x] Server timeouts: `ReadHeaderTimeout: 10s`, `ReadTimeout: 30s`, `IdleTimeout: 120s` (`WriteTimeout: 0` for SSE)
-- [x] Error channel for listen goroutine (no `os.Exit(1)` bypassing deferred cleanup)
-- [x] WaitGroup initialized and assigned to handler.Wg
-
----
-
-## Phase 8: CLI Client
-**Dependencies:** Phase 7 (sync MVP built first; async/SSE integration still planned)
-**Goal:** Cobra-based CLI client with chat, session, agent, and memory commands
-
-### 8.1 CLI Entrypoint (`cmd/cli/main.go`)
-- [x] Cobra root command: `gopengai` with `--server-url` flag (default `http://localhost:8080`)
-
-### 8.2 Chat Command
-- [x] `gopengai chat "message" [--session-id ID] [--agent NAME]` — **sync**: send message, wait for JSON response
-- [x] Interactive mode: `gopengai chat` — REPL loop (sync polling)
-- [x] Upgrade to SSE streaming: subscribe to session SSE, send message, display streamed tokens (`--stream` flag, `parseSSE`/`readSSELine` helpers, token-by-token printing, tool call indicators)
-- [x] Display model name + usage in output (model, prompt_tokens, completion_tokens, total_tokens from `message.complete` SSE event)
-
-### 8.3 Session Commands
-- [x] `gopengai session list` → list all sessions
-- [x] `gopengai session show <id>` → show session + linear messages
-- [x] `gopengai session create [--title T] [--agent NAME]` → create session
-- [x] `gopengai session delete <id>` → delete session
-- [x] `gopengai session branches <id>` → list all leaves (GET /session/{id}/branches, formatted table with ID/Role/Agent/Content)
-- [x] `gopengai session fork <id> --message <msg_id>` → fork at message (POST /session/{id}/fork, --message/-m, --content/-c, --title/-t, --agent/-a flags)
-- [x] `gopengai session switch <id> --leaf <leaf_id>` → select branch (PUT /session/{id}/branch, --leaf/-l flag)
-
-### 8.4 Agent Commands
-- [x] `gopengai agents` → list available agents (GET /agents, formatted table with Name/Model/Tools/Description)
-- [x] `gopengai agents info <name>` → show agent detail (GET /agents/{name}, Name/Model/Parent/Mode/Description/Tools)
-
-### 8.5 Memory Commands
-- [x] `gopengai memory list [--agent NAME]` → show memory facts (GET /memory?agent=NAME, table with Key/Category/Value)
-- [x] `gopengai memory get <key> [--agent NAME]` → get specific fact (GET /memory/{key}?agent=NAME, Key/Agent/Category/Value)
-
----
-
-## Phase 9: Testing & Quality
-**Dependencies:** Phase 1-8 (parallel with development)
-**Goal:** Unit tests, integration tests, API tests
-
-### 9.1 Unit Tests
-- [ ] `internal/db/` — test migrations, CRUD operations (in-memory SQLite)
-- [ ] `internal/history/tree.go` — test tree construction, branch selection, edit→new-branch
-- [ ] `internal/agent/loader.go` — test YAML frontmatter parsing with permissions
-- [ ] `internal/tools/` — test each tool's Execute with mock dependencies
-- [ ] `internal/agent/engine.go` — test loop logic with mock LLM client
-- [ ] `internal/api/events.go` — test event bus subscribe/publish/unsubscribe
-- [ ] `internal/config/` — test config loading, defaults, env overrides
-
-### 9.2 Integration Tests
-- [ ] Full chat flow: POST /session/:id/message → SSE events → message.complete
-- [ ] Test OpenAI-compatible endpoint format
-- [ ] Test branch creation via message edit
-- [ ] Test session fork
-- [ ] Test tool permission deny
-- [ ] Test abort mid-generation
-
-### 9.3 Test Infrastructure
-- [ ] Mock HTTP server for LLM responses (net/http/httptest)
-- [ ] Temporary SQLite databases per test
-- [ ] SSE test helpers (subscribe, collect events, assert)
-
----
-
-## Phase 10: Documentation & Polish
-**Dependencies:** Phase 1-9
-**Goal:** Updated README, example agents, gopengai.json.example, Makefile
-
-### 10.1 Documentation
 - [ ] Update `README.md` with actual API examples, CLI usage, SSE examples
-- [ ] Create `agents/examples/` with pre-built agents (researcher, analyst, summarizer)
-- [x] Create `gopengai.json.example` with all configurable fields documented
-- [ ] Update all diagrams in `DOCS/diagrams/` if needed
 
-### 10.2 Code Quality
-- [x] `go vet ./...` — clean
-- [ ] `go fmt ./...` — formatted
-- [x] Add `Makefile` with common commands:
-  ```makefile
-  build:    go build ./cmd/api/ ./cmd/cli/
-  run:      go run ./cmd/api/
-  test:     go test ./... -v
-  lint:     go vet ./...
-  fmt:      go fmt ./...
-  clean:    rm -f gopengai gopengai.db
-  ```
+#### 10.2 Code Quality
+- [ ] Run `go fmt ./...` and commit formatting changes
+- [ ] Verify diagrams in `DOCS/diagrams/` match current architecture (async + SSE)
+- [ ] Update `gopengai.json.example` if any new config fields were added
+- [ ] Add `api`, `cli`, `gopengai` binaries to `.gitignore`
 
 ---
 
@@ -553,119 +165,27 @@ Phase 10 (Docs)        ███░░░░░░░  30%  (README outdated, no
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| SQLite concurrency (multiple requests) | Medium | Use WAL mode, `SetMaxOpenConns(1)`, transactions for writes |
+| SQLite concurrency (multiple requests) | Medium | WAL mode, `SetMaxOpenConns(1)`, transactions for writes |
 | sqlc code generation drift | Low | Regenerate on migration change, commit generated files |
-| Goose migration ordering | Low | Sequential timestamps in filenames, test rollback path |
 | SSE memory leak (forgotten listeners) | Medium | Unsubscribe on disconnect, periodic cleanup of dead channels |
 | LLM tool calling format differences across providers | High | Abstract LLM client, test with target provider early |
 | Infinite agent loop (LLM keeps calling tools) | Medium | Max iterations from config, timeout per iteration |
-| Recursive delegation (agent delegates to itself) | Medium | Detect cycles in delegation chain (visited set) |
-| Context window overflow from long branches | Medium | Truncate history, keep only active branch, summarize old messages |
+| Recursive delegation (agent delegates to itself) | Medium | Cycle detection in delegation chain (visited set) |
+| Context window overflow from long branches | Medium | Truncate history, keep only active branch |
 | Async goroutine leak on server shutdown | Medium | Context cancellation + WaitGroup for graceful shutdown |
-| ncruces/go-sqlite3 Wasm performance | Low | Benchmark early; fallback to mattn/go-sqlite3 if needed |
 
-## Dependency Graph (Build Order)
+## Priority Stack (if time-constrained)
 
-```
-Phase 0 (Bootstrap + Rename + go mod init)
-  └── Phase 1 (Config + SQLite + Goose migrations + sqlc setup)
-        ├── Phase 2 (LLM Client)
-        │     └── Phase 6 (Agent Engine + Event Bus)
-        │           └── Phase 7 (HTTP API + SSE)
-        │                 └── Phase 8 (CLI)
-        └── Phase 3 (Agent Types + Loader)
-              └── Phase 5 (Tools + Permissions)
-        └── Phase 4 (History Tree — uses sqlc-generated queries)
-  Phase 9 (Testing) — runs in parallel
-  Phase 10 (Docs) — last
-```
+1. **Must Have:** All of Phase 10 (docs + polish) for submission
+2. **Should Have:** Phase 9 core unit tests (config, history, agent loader, engine)
+3. **Nice to Have:** Full integration tests, all example agents
 
-## Key DB Tooling (borrowed from OpenCode)
+---
+
+## Key DB Tooling
 
 | Tool | Purpose | Why |
 |------|---------|-----|
 | `ncruces/go-sqlite3` | SQLite driver | Pure Go (Wasm), no CGo dependency |
 | `pressly/goose/v3` | Schema migrations | Embedded in binary, auto-applied on startup |
 | `sqlc v1.29+` | Query code generation | Type-safe Go from raw SQL, no ORM overhead |
-
-## Priority Stack (if time-constrained)
-
-1. **Must Have:** Phases 0-7 (working API, agent loop, LLM calls, SQLite, SSE, basic tools)
-2. **Should Have:** Phase 8 (CLI client), Phase 9 (tests)
-3. **Nice to Have:** Advanced delegation, streaming LLM output, memory recall search
-
----
-
-## 🔴 Critical Fixes (Audit 2026-05-30)
-
-These are blockers found during audit that need attention BEFORE new features:
-
-### Fix 1: Create `internal/api/sse.go` — SSE Writer & Handlers
-- [ ] **Implementation:** `WriteSSE(w, event)` — format as SSE text, flush via `http.Flusher`
-- [ ] **Implementation:** `HandleGlobalSSE(w, r)` — GET /event — subscribe to EventBus global, stream
-- [ ] **Implementation:** `HandleSessionSSE(w, r)` — GET /session/{id}/events — subscribe to session stream
-- [ ] **Test:** Use httptest + mock EventBus to verify SSE event formatting and streaming
-
-### Fix 2: Implement Middleware (`internal/api/middleware.go`)
-- [x] `LoggingMiddleware` — log method, path, status, duration (structured)
-- [x] `CORSMiddleware` — Allow-Origin: *, Allow-Methods, Allow-Headers, Vary: Origin
-- [x] `RecoveryMiddleware` — panic recovery → 500 (safe if headers committed)
-- [x] `AuthMiddleware` — bearer-token auth with `server.api_key` + env override
-- [x] Wire middleware into server (handler wrapping or Go 1.22+ middleware pattern)
-
-### Fix 3: Register Missing Routes (`internal/api/routes.go`)
-- [ ] `GET /event` → HandleGlobalSSE
-- [ ] `GET /session/{id}/events` → HandleSessionSSE
-- [ ] `PATCH /session/{id}` → update session title
-- [ ] `GET /session/status` → status of all sessions
-- [ ] `GET /session/{id}/messages` → active branch messages (recursive CTE)
-- [ ] `GET /session/{id}/branches` → list all leaf nodes
-- [ ] `POST /session/{id}/fork` → fork session at message
-- [ ] `PUT /session/{id}/branch` → select active branch
-- [ ] `PATCH /messages/{id}` → edit message → new branch
-- [ ] `GET /agents` → list registered agents
-- [ ] `GET /agents/{name}` → get agent detail
-- [ ] `GET /memory?agent=NAME` → list memory facts
-- [ ] `GET /memory/{key}?agent=NAME` → get specific fact
-- [ ] `POST /session/{id}/abort` → abort running generation
-- [ ] `GET /v1/models` → list agents as models
-
-### Fix 4: Refactor `POST /session/{id}/message` to Async
-- [ ] Change response status from 200 → 202
-- [ ] Remove synchronous LLM call from handler
-- [ ] Instead: save user message → spawn `engine.Process()` goroutine → return 202 with location
-- [ ] Client receives response via SSE stream
-- [ ] **Test:** Integration test — POST message, collect SSE events, assert message.complete
-
-### Fix 5: Create Tests (Phase 9)
-- [ ] `internal/config/config_test.go` — test loading, defaults, env overrides
-- [ ] `internal/history/tree_test.go` — tree construction, branch selection, path traversal
-- [ ] `internal/history/branch_test.go` — edit message → new branch, fork session
-- [ ] `internal/agent/loader_test.go` — YAML frontmatter parsing with permissions
-- [ ] `internal/agent/engine_test.go` — loop logic with mock LLM client
-- [ ] `internal/tools/web_fetch_test.go` — HTTP mock, HTML stripping
-- [ ] `internal/tools/memory_test.go` — save/recall with mock DB
-- [ ] `internal/tools/delegate_test.go` — cycle detection, timeout
-- [ ] `internal/api/events_test.go` — EventBus subscribe/publish/unsubscribe/close
-- [ ] `internal/api/handler_test.go` — session CRUD, chat endpoint (httptest)
-- [ ] `internal/llm/client_test.go` — mock server, error handling
-
-### Fix 6: CLI Upgrades
-- [ ] CLI flag overrides: `--port`, `--config` in config loader (deferred — belongs to Phase 1)
-- [x] Upgrade `gopengai chat` to SSE streaming (subscribe to session SSE, display streamed tokens, `--stream` flag)
-- [x] Display model name + usage in CLI output (model + token counts from `message.complete` SSE event)
-- [x] `gopengai session branches <id>` — list leaves (GET /session/{id}/branches, formatted table)
-- [x] `gopengai session fork <id> --message <msg_id>` — fork at message (POST /session/{id}/fork, `-m/-c/-t/-a` flags)
-- [x] `gopengai session switch <id> --leaf <leaf_id>` — select branch (PUT /session/{id}/branch, `-l` flag)
-- [x] `gopengai agents` — list agents (GET /agents, formatted table)
-- [x] `gopengai agents info <name>` — agent detail (GET /agents/{name})
-- [x] `gopengai memory list [--agent NAME]` — memory facts (GET /memory?agent=NAME)
-- [x] `gopengai memory get <key> [--agent NAME]` — specific fact (GET /memory/{key}?agent=NAME)
-
-### Fix 7: Example Agents & Documentation
-- [ ] Create `agents/examples/researcher.md` with web_fetch + memory tools
-- [ ] Create `agents/examples/analyst.md` with memory + delegate tools
-- [ ] Create `agents/examples/summarizer.md` with no tools
-- [ ] Update `README.md` with actual API examples, CLI usage, SSE examples
-- [ ] Run `go fmt ./...` (format all code)
-- [ ] Verify diagrams in `DOCS/diagrams/` match current architecture

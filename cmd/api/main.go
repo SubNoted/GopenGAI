@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -21,14 +22,19 @@ import (
 )
 
 func main() {
-	cfgPath := "gopengai.json"
-	if len(os.Args) > 1 {
-		cfgPath = os.Args[1]
-	}
+	// CLI flags (override config file values).
+	cfgPath := flag.String("config", "gopengai.json", "path to config file")
+	portFlag := flag.Int("port", 0, "override HTTP port (0 = use config value)")
+	flag.Parse()
 
-	cfg, err := config.Load(cfgPath)
+	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
+	}
+
+	// Override port if --port flag was explicitly provided.
+	if *portFlag > 0 {
+		cfg.Server.Port = *portFlag
 	}
 
 	// Open database
