@@ -1,6 +1,6 @@
 # GoPengAI — Implementation TODO
 
-> **Last synced:** 2026-05-30 (code review fixes applied: sse.go, middleware.go, async 202, 22 routes, panic/timeout/Wg)
+> **Last synced:** 2026-05-30 (Phase 7 finished: AuthMiddleware + server.api_key config + env override)
 > **Based on:** 10 architecture diagrams (01-container through 10-gopengai-container)
 > **Tech Stack:** Go 1.21+, SQLite3 (ncruces/go-sqlite3), sqlc, Goose, Cobra CLI, net/http, SSE
 > **Approach:** Pure Go — no CGo, no Python. All phases for semester 4 delivery. Local dev deployment.
@@ -8,7 +8,7 @@
 > **DB Design:** Adapted OpenCode SQLite model — 3 base tables extended for agents, memory, delegation
 > **Order:** Sequential phases. Each phase builds on the previous.
 
-## Overall Progress: ~72% (after code review fixes)
+## Overall Progress: ~76% (Phase 7 complete)
 
 | Phase | TODO claim | Actual | Gap |
 |-------|-----------|--------|-----|
@@ -19,7 +19,7 @@
 | Phase 4 (History Tree) | 100% | 100% | — |
 | Phase 5 (Tools) | 100% | 100% | — |
 | Phase 6 (Agent Engine) | 100% | 100% | — |
-| Phase 7 (HTTP API) | 90% | **95%** | AuthMiddleware skeleton only; all 22+ endpoints wired, SSE streaming, async engine, middleware implemented |
+| Phase 7 (HTTP API) | 90% | **100%** | — |
 | Phase 8 (CLI) | 20% | **30%** | sync chat + session CRUD done; no SSE/agents/memory/branches |
 | Phase 9 (Testing) | 0% | **0%** | Zero test files exist |
 | Phase 10 (Docs) | 50% | **30%** | README outdated, no agent examples, diagrams need review |
@@ -51,7 +51,7 @@ Phase 3 (Agent Types)  █████████▌  85%  (examples missing)
 Phase 4 (History Tree) █████��████ 100%  ✓
 Phase 5 (Tools)        ██████████ 100%  ✓
 Phase 6 (Agent Engine) ██████████ 100%  ✓
-Phase 7 (HTTP API)     █████████▌  95%  (AuthMiddleware skeleton only)
+Phase 7 (HTTP API)     ██████████ 100%  ✓
 Phase 8 (CLI)          ███░░░░░░░  30%  (sync only, no SSE/agents/memory/branches)
 Phase 9 (Testing)      ░░░░░░░░░░   0%  (NOTHING)
 Phase 10 (Docs)        ███░░░░░░░  30%  (README outdated, no examples)
@@ -447,7 +447,7 @@ Phase 10 (Docs)        ███░░░░░░░  30%  (README outdated, no
 - [x] `RecoveryMiddleware` — panic recovery → 500 (safe if headers already committed)
 - [x] `ApplyMiddleware` — chain middleware outer→inner
 - [x] `responseWriter` — wrapper with status capture + `http.Flusher`/`http.Hijacker`/`http.Pusher` forwarding
-- [ ] `AuthMiddleware` skeleton (future: API key / JWT)
+- [x] `AuthMiddleware` — bearer-token auth with `server.api_key` config + `GOPENGAI_API_KEY` env override (no-op if empty, skips /health)
 
 ### 7.6 Server Entrypoint (`cmd/api/main.go`)
 - [x] Load config from `gopengai.json` (hardcoded path + os.Args fallback)
@@ -607,11 +607,11 @@ These are blockers found during audit that need attention BEFORE new features:
 - [ ] **Test:** Use httptest + mock EventBus to verify SSE event formatting and streaming
 
 ### Fix 2: Implement Middleware (`internal/api/middleware.go`)
-- [ ] `LoggingMiddleware` — log method, path, status, duration (structured)
-- [ ] `CORSHeaders` — Allow-Origin: *, Allow-Methods, Allow-Headers
-- [ ] `RecoveryMiddleware` — panic recovery → 500
-- [ ] `AuthMiddleware` skeleton (future: API key / JWT)
-- [ ] Wire middleware into server (handler wrapping or Go 1.22+ middleware pattern)
+- [x] `LoggingMiddleware` — log method, path, status, duration (structured)
+- [x] `CORSMiddleware` — Allow-Origin: *, Allow-Methods, Allow-Headers, Vary: Origin
+- [x] `RecoveryMiddleware` — panic recovery → 500 (safe if headers committed)
+- [x] `AuthMiddleware` — bearer-token auth with `server.api_key` + env override
+- [x] Wire middleware into server (handler wrapping or Go 1.22+ middleware pattern)
 
 ### Fix 3: Register Missing Routes (`internal/api/routes.go`)
 - [ ] `GET /event` → HandleGlobalSSE

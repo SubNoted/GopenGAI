@@ -89,8 +89,9 @@ func main() {
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux, handler)
 
-	// Wrap the mux with middleware: recovery → CORS → logging.
+	// Wrap the mux with middleware: auth → recovery → CORS → logging.
 	wrapped := api.ApplyMiddleware(mux,
+		api.AuthMiddleware(cfg.Server.APIKey),
 		api.RecoveryMiddleware,
 		api.CORSMiddleware,
 		api.LoggingMiddleware,

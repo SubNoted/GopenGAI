@@ -18,8 +18,9 @@ type Config struct {
 
 // ServerConfig holds HTTP server settings.
 type ServerConfig struct {
-	Host string `json:"host"`
-	Port int    `json:"port"`
+	Host   string `json:"host"`
+	Port   int    `json:"port"`
+	APIKey string `json:"api_key"` // optional bearer-token API key
 }
 
 // LLMConfig holds LLM provider settings.
@@ -123,5 +124,8 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("GOPENGAI_DEFAULT_AGENT"); v != "" {
 		cfg.DefaultAgent = v
+	}
+	if v := os.Getenv("GOPENGAI_API_KEY"); v != "" {
+		cfg.Server.APIKey = v
 	}
 }

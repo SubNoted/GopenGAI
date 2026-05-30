@@ -1,19 +1,22 @@
 package api
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 	"runtime/debug"
+	"strings"
 	"time"
 )
 
 // ---------------------------------------------------------------------------
 // Middleware — standard HTTP middleware for the GoPengAI API server.
 //
-// Three middleware functions are provided:
-//   - LoggingMiddleware   — logs method, path, status, duration per request
-//   - CORSMiddleware      — sets CORS headers, handles OPTIONS preflight
-//   - RecoveryMiddleware  — catches panics, logs stack trace, returns 500
+// Four middleware functions are provided:
+//   - AuthMiddleware(apiKey) — bearer-token auth (no-op if apiKey empty)
+//   - LoggingMiddleware      — logs method, path, status, duration per request
+//   - CORSMiddleware         — sets CORS headers, handles OPTIONS preflight
+//   - RecoveryMiddleware     — catches panics, logs stack trace, returns 500
 //
 // Use ApplyMiddleware to chain them onto any http.Handler.
 // ---------------------------------------------------------------------------
@@ -130,6 +133,41 @@ func RecoveryMiddleware(next http.Handler) http.Handler {
 		}()
 		next.ServeHTTP(rw, r)
 	})
+}
+
+// AuthMiddleware returns middleware that enforces bearer-token authentication
+// when an API key is configured. If apiKey is empty, all requests pass through.
+// The /health endpoint is always excluded from authentication.
+//
+// Requests without a valid Authorization: Bearer <key> header receive a 401
+// JSON response with {"error": "unauthorized"}.
+func AuthMiddleware(apiKey string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// No auth configured — pass through.
+			if apiKey == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Health check is always public.
+			if r.URL.Path == "/health" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Validate Authorization: Bearer <key>
+			auth := r.Header.Get("Authorization")
+			if !strings.HasPrefix(auth, "Bearer ") || strings.TrimPrefix(auth, "Bearer ") != apiKey {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // ApplyMiddleware chains middleware functions onto a handler. The first
